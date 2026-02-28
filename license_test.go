@@ -194,6 +194,103 @@ func TestCheckLicense(t *testing.T) {
 	}
 }
 
+func TestCheckLicenseWith_ExtraBlocked(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		imageURL     string
+		sourceURL    string
+		extraBlocked []string
+		want         ImageLicense
+	}{
+		{
+			name:         "custom blocked domain in imageURL",
+			imageURL:     "https://www.mycorpstock.com/photo/123.jpg",
+			sourceURL:    "",
+			extraBlocked: []string{"mycorpstock"},
+			want:         LicenseBlocked,
+		},
+		{
+			name:         "custom blocked domain in sourceURL",
+			imageURL:     "https://cdn.example.com/image.jpg",
+			sourceURL:    "https://www.mycorpstock.com/gallery/123",
+			extraBlocked: []string{"mycorpstock"},
+			want:         LicenseBlocked,
+		},
+		{
+			name:         "built-in blocked still works with extra",
+			imageURL:     "https://www.shutterstock.com/image.jpg",
+			sourceURL:    "",
+			extraBlocked: []string{"mycorpstock"},
+			want:         LicenseBlocked,
+		},
+		{
+			name:         "no match returns unknown",
+			imageURL:     "https://example.com/photo.jpg",
+			sourceURL:    "",
+			extraBlocked: []string{"mycorpstock"},
+			want:         LicenseUnknown,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := CheckLicenseWith(tc.imageURL, tc.sourceURL, tc.extraBlocked, nil)
+			if got != tc.want {
+				t.Errorf("CheckLicenseWith(%q, %q, %v, nil) = %v, want %v",
+					tc.imageURL, tc.sourceURL, tc.extraBlocked, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckLicenseWith_ExtraSafe(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		imageURL  string
+		sourceURL string
+		extraSafe []string
+		want      ImageLicense
+	}{
+		{
+			name:      "custom safe domain in imageURL",
+			imageURL:  "https://images.myfreephotos.org/sunset.jpg",
+			sourceURL: "",
+			extraSafe: []string{"myfreephotos"},
+			want:      LicenseSafe,
+		},
+		{
+			name:      "built-in safe still works with extra",
+			imageURL:  "https://images.unsplash.com/photo.jpg",
+			sourceURL: "",
+			extraSafe: []string{"myfreephotos"},
+			want:      LicenseSafe,
+		},
+		{
+			name:      "blocked takes precedence over custom safe",
+			imageURL:  "https://www.shutterstock.com/image.jpg",
+			sourceURL: "",
+			extraSafe: []string{"shutterstock"},
+			want:      LicenseBlocked,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := CheckLicenseWith(tc.imageURL, tc.sourceURL, nil, tc.extraSafe)
+			if got != tc.want {
+				t.Errorf("CheckLicenseWith(%q, %q, nil, %v) = %v, want %v",
+					tc.imageURL, tc.sourceURL, tc.extraSafe, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestImageLicenseString(t *testing.T) {
 	t.Parallel()
 

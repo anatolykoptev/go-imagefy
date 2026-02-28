@@ -85,21 +85,29 @@ var SafeDomains = []string{
 // Both URLs are checked — an image hosted on a CDN may still originate from a stock site.
 // Also checks URL path patterns that indicate stock photo pages.
 func CheckLicense(imageURL, sourceURL string) ImageLicense {
+	return CheckLicenseWith(imageURL, sourceURL, nil, nil)
+}
+
+// CheckLicenseWith is like CheckLicense but also checks caller-supplied extra
+// blocked and safe domain lists. The extra slices use the same substring-match
+// semantics as the built-in BlockedDomains / SafeDomains.
+func CheckLicenseWith(imageURL, sourceURL string, extraBlocked, extraSafe []string) ImageLicense {
 	for _, u := range []string{imageURL, sourceURL} {
-		if isBlocked(u) {
+		if isBlockedWith(u, extraBlocked) {
 			return LicenseBlocked
 		}
 	}
 	for _, u := range []string{imageURL, sourceURL} {
-		if isSafe(u) {
+		if isSafeWith(u, extraSafe) {
 			return LicenseSafe
 		}
 	}
 	return LicenseUnknown
 }
 
-// isBlocked reports whether the URL matches a blocked domain or URL pattern.
-func isBlocked(rawURL string) bool {
+// isBlockedWith reports whether the URL matches a blocked domain, URL pattern,
+// or any of the extra blocked domains.
+func isBlockedWith(rawURL string, extra []string) bool {
 	if rawURL == "" {
 		return false
 	}
@@ -114,6 +122,11 @@ func isBlocked(rawURL string) bool {
 				return true
 			}
 		}
+		for _, d := range extra {
+			if strings.Contains(host, d) {
+				return true
+			}
+		}
 	}
 	path := strings.ToLower(parsed.Path)
 	for _, p := range BlockedURLPatterns {
@@ -124,13 +137,19 @@ func isBlocked(rawURL string) bool {
 	return false
 }
 
-// isSafe reports whether the URL matches a known safe/free domain.
-func isSafe(rawURL string) bool {
+// isSafeWith reports whether the URL matches a known safe/free domain
+// or any of the extra safe domains.
+func isSafeWith(rawURL string, extra []string) bool {
 	host := extractHost(rawURL)
 	if host == "" {
 		return false
 	}
 	for _, d := range SafeDomains {
+		if strings.Contains(host, d) {
+			return true
+		}
+	}
+	for _, d := range extra {
 		if strings.Contains(host, d) {
 			return true
 		}
