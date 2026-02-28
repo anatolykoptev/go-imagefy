@@ -2,25 +2,18 @@ package imagefy
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
 
 const (
 	searxngTimeout      = 15 * time.Second
-	searxngBodyLimit    = 1 * 1024 * 1024 // 1MB
 	validationSemaphore = 3
 )
 
-// ImageCandidate holds a SearXNG image result with metadata.
+// ImageCandidate holds an image result with metadata.
 type ImageCandidate struct {
 	ImgURL    string       // direct image URL
 	Thumbnail string       // thumbnail URL
@@ -29,10 +22,16 @@ type ImageCandidate struct {
 	License   ImageLicense // license classification
 }
 
-// SearchImages queries SearXNG for images and returns up to maxResults validated candidates.
+// SearchImages queries configured search providers for images and returns up to maxResults validated candidates.
 // Stock photo results (LicenseBlocked) are removed entirely.
 // Results are sorted with LicenseSafe first, then LicenseUnknown.
 func (cfg *Config) SearchImages(ctx context.Context, query string, maxResults int) []ImageCandidate {
+	return cfg.SearchImagesWithOpts(ctx, query, maxResults, SearchOpts{})
+}
+
+// SearchImagesWithOpts is like SearchImages but accepts SearchOpts for pagination,
+// engine selection and custom timeout.
+func (cfg *Config) SearchImagesWithOpts(ctx context.Context, query string, maxResults int, opts SearchOpts) []ImageCandidate {
 	if query == "" {
 		return nil
 	}
@@ -43,97 +42,67 @@ func (cfg *Config) SearchImages(ctx context.Context, query string, maxResults in
 		cfg.OnImageSearch()
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, searxngTimeout)
-	defer cancel()
-
-	results, err := cfg.fetchSearxngResults(ctx, query)
-	if err != nil {
-		slog.Warn("imagefy: SearXNG request failed", "error", err.Error())
-		return nil
+	timeout := searxngTimeout
+	if opts.Timeout > 0 {
+		timeout = opts.Timeout
 	}
 
-	toValidate := cfg.filterCandidates(results)
-	if len(toValidate) == 0 {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	providers := cfg.resolveProviders()
+	candidates := cfg.gatherCandidates(ctx, providers, query, opts)
+
+	if len(candidates) == 0 {
 		return nil
 	}
 
 	// Sort: safe sources first, then unknown.
-	sort.SliceStable(toValidate, func(i, j int) bool {
-		return toValidate[i].License < toValidate[j].License
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].License < candidates[j].License
 	})
 
-	return cfg.validateCandidates(ctx, toValidate, maxResults)
+	return cfg.validateCandidates(ctx, candidates, maxResults)
 }
 
-type searxngResult struct {
-	ImgSrc    string `json:"img_src"`
-	Thumbnail string `json:"thumbnail_src"`
-	URL       string `json:"url"`
-	Title     string `json:"title"`
+// resolveProviders returns the effective provider list.
+// If Providers is set, it is used directly. Otherwise a SearXNGProvider is
+// auto-created from SearxngURL for backward compatibility.
+func (cfg *Config) resolveProviders() []SearchProvider {
+	if len(cfg.Providers) > 0 {
+		return cfg.Providers
+	}
+	if cfg.SearxngURL != "" {
+		return []SearchProvider{&SearXNGProvider{
+			URL:        cfg.SearxngURL,
+			HTTPClient: cfg.HTTPClient,
+			UserAgent:  cfg.UserAgent,
+		}}
+	}
+	return nil
 }
 
-func (cfg *Config) fetchSearxngResults(ctx context.Context, query string) ([]searxngResult, error) {
-	searchURL := fmt.Sprintf("%s/search?q=%s&format=json&categories=images",
-		strings.TrimRight(cfg.SearxngURL, "/"), url.QueryEscape(query))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-
-	client := cfg.HTTPClient
-	resp, err := client.Do(req) //nolint:gosec // G107: URL is cfg-supplied by design — SSRF is caller's responsibility
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, searxngBodyLimit))
-	if err != nil {
-		return nil, err
-	}
-
-	var searchResp struct {
-		Results []searxngResult `json:"results"`
-	}
-	if err := json.Unmarshal(body, &searchResp); err != nil {
-		return nil, err
-	}
-
-	return searchResp.Results, nil
-}
-
-func (cfg *Config) filterCandidates(results []searxngResult) []ImageCandidate {
-	var candidates []ImageCandidate
-	for _, r := range results {
-		if r.ImgSrc == "" {
+// gatherCandidates collects image candidates from all providers.
+// Each provider is called sequentially; errors are logged and skipped so
+// that remaining providers still contribute results.
+func (cfg *Config) gatherCandidates(ctx context.Context, providers []SearchProvider, query string, opts SearchOpts) []ImageCandidate {
+	var all []ImageCandidate
+	for _, p := range providers {
+		results, err := p.Search(ctx, query, opts)
+		if err != nil {
+			slog.Warn("imagefy: provider search failed", "provider", p.Name(), "error", err.Error())
 			continue
 		}
-		if IsLogoOrBanner(strings.ToLower(r.ImgSrc)) {
-			continue
-		}
-
-		license := CheckLicense(r.ImgSrc, r.URL)
-		if license == LicenseBlocked {
-			continue
-		}
-
-		candidates = append(candidates, ImageCandidate{
-			ImgURL:    r.ImgSrc,
-			Thumbnail: r.Thumbnail,
-			Source:    r.URL,
-			Title:     r.Title,
-			License:   license,
-		})
+		all = append(all, results...)
 	}
-	return candidates
+	return all
 }
 
 func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCandidate, maxResults int) []ImageCandidate {
 	sem := make(chan struct{}, validationSemaphore)
 	var mu sync.Mutex
 	var validated []ImageCandidate
+	dedup := &dedupFilter{}
 
 	var wg sync.WaitGroup
 	for _, c := range toValidate {
@@ -150,7 +119,7 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			cfg.validateOne(ctx, cand, maxResults, &mu, &validated)
+			cfg.validateOne(ctx, cand, maxResults, &mu, &validated, dedup)
 		}(c)
 	}
 	wg.Wait()
@@ -160,7 +129,14 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 
 // validateOne validates a single candidate and appends it to validated if it passes all checks.
 // Recovers from panics to protect the goroutine pool.
-func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate) {
+//
+// Pipeline stages:
+//  1. ValidateImageURL — HTTP probe (dimensions, content-type, logo/banner check)
+//  2. downloadForValidation — single download for dedup + metadata
+//  3. Perceptual dedup — reject visual duplicates
+//  4. ExtractImageMetadata + AssessLicense — domain + metadata signals
+//  5. IsRealPhoto (LLM) — fallback for unknown license
+func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate, dedup *dedupFilter) {
 	defer func() {
 		if r := recover(); r != nil {
 			if cfg.OnPanic != nil {
@@ -172,6 +148,53 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 	if !cfg.ValidateImageURL(ctx, cand.ImgURL) {
 		return
 	}
+
+	// Download once for both dedup and metadata extraction.
+	data, img := cfg.downloadForValidation(ctx, cand.ImgURL)
+
+	// Dedup check using perceptual hash.
+	if img != nil {
+		if dedup.isDuplicate(img) {
+			slog.Debug("imagefy: dedup rejected", "url", cand.ImgURL)
+			return
+		}
+	}
+
+	// Extract metadata and assess license.
+	meta := ExtractImageMetadata(data)
+	assessment := cfg.AssessLicense(cand, meta)
+
+	if assessment.License == LicenseBlocked {
+		slog.Debug("imagefy: blocked by license assessment", "url", cand.ImgURL, "signals", assessment.Signals)
+		if cfg.OnClassification != nil {
+			cfg.OnClassification(ClassificationEvent{
+				URL:    cand.ImgURL,
+				Class:  ClassStock,
+				Source: "license_assessment",
+			})
+		}
+		return
+	}
+
+	if assessment.License == LicenseSafe {
+		slog.Debug("imagefy: safe by license assessment", "url", cand.ImgURL, "signals", assessment.Signals)
+		if cfg.OnClassification != nil {
+			cfg.OnClassification(ClassificationEvent{
+				URL:        cand.ImgURL,
+				Class:      ClassPhoto,
+				Confidence: 1.0,
+				Source:     "license_assessment",
+			})
+		}
+		mu.Lock()
+		if len(*validated) < maxResults {
+			*validated = append(*validated, cand)
+		}
+		mu.Unlock()
+		return
+	}
+
+	// Unknown license — fall through to LLM classification.
 	if !cfg.IsRealPhoto(ctx, cand.ImgURL) {
 		slog.Debug("imagefy: vision rejected", "url", cand.ImgURL)
 		return

@@ -1,7 +1,5 @@
 package imagefy
 
-import "fmt"
-
 // LicenseSignal represents a single evidence point about an image's license status.
 type LicenseSignal struct {
 	Source  string       // signal source: "domain", "extra_domain", "metadata_stock", "metadata_cc", "url_pattern"
@@ -26,13 +24,13 @@ func (cfg *Config) AssessLicense(cand ImageCandidate, meta *ImageMetadata) Licen
 	case LicenseBlocked:
 		signals = append(signals, LicenseSignal{
 			Source:  "domain",
-			Detail:  fmt.Sprintf("blocked by search-time domain check: %s", cand.Source),
+			Detail:  "blocked by search-time domain check: " + cand.Source,
 			License: LicenseBlocked,
 		})
 	case LicenseSafe:
 		signals = append(signals, LicenseSignal{
 			Source:  "domain",
-			Detail:  fmt.Sprintf("safe by search-time domain check: %s", cand.Source),
+			Detail:  "safe by search-time domain check: " + cand.Source,
 			License: LicenseSafe,
 		})
 	}
@@ -44,7 +42,7 @@ func (cfg *Config) AssessLicense(cand ImageCandidate, meta *ImageMetadata) Licen
 		if extLicense != cand.License && extLicense != LicenseUnknown {
 			signals = append(signals, LicenseSignal{
 				Source:  "extra_domain",
-				Detail:  fmt.Sprintf("reclassified by extended domain check: %s", extLicense),
+				Detail:  "reclassified by extended domain check: " + extLicense.String(),
 				License: extLicense,
 			})
 		}
@@ -54,7 +52,7 @@ func (cfg *Config) AssessLicense(cand ImageCandidate, meta *ImageMetadata) Licen
 	if IsStockByMetadata(meta) {
 		signals = append(signals, LicenseSignal{
 			Source:  "metadata_stock",
-			Detail:  fmt.Sprintf("stock agency detected in metadata: %s", metadataStockDetail(meta)),
+			Detail:  "stock agency detected in metadata: " + metadataStockDetail(meta),
 			License: LicenseBlocked,
 		})
 	}
@@ -63,7 +61,7 @@ func (cfg *Config) AssessLicense(cand ImageCandidate, meta *ImageMetadata) Licen
 	if IsCCByMetadata(meta) {
 		signals = append(signals, LicenseSignal{
 			Source:  "metadata_cc",
-			Detail:  fmt.Sprintf("Creative Commons license in metadata: %s", metadataCCDetail(meta)),
+			Detail:  "Creative Commons license in metadata: " + metadataCCDetail(meta),
 			License: LicenseSafe,
 		})
 	}
