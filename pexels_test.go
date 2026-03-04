@@ -146,3 +146,124 @@ func TestPexelsProviderSearch_InternalAPI(t *testing.T) {
 		t.Errorf("License = %v, want LicenseSafe", got.License)
 	}
 }
+
+// TestPexelsProviderSearch_PrefersOfficialAPI verifies Search() calls official first when both keys set.
+func TestPexelsProviderSearch_PrefersOfficialAPI(t *testing.T) {
+	t.Parallel()
+
+	var usedAuth bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			usedAuth = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(buildPexelsOfficialJSON([]pexelsOfficialPhoto{
+			{ID: 1, Alt: "Photo", URL: "https://pexels.com/photo/1/", Src: pexelsSrc{Large: "https://img.pexels.com/1.jpg"}},
+		}))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &PexelsProvider{
+		APIKey:       "key",
+		SecretKey:    "secret",
+		HTTPClient:   srv.Client(),
+		officialBase: srv.URL,
+		internalBase: srv.URL,
+	}
+	candidates, err := p.Search(context.Background(), "test", SearchOpts{})
+	if err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if !usedAuth {
+		t.Error("expected official API (Authorization header) to be used first")
+	}
+	if len(candidates) == 0 {
+		t.Error("expected candidates from official API")
+	}
+}
+
+// TestPexelsProviderSearch_FallsBackToInternal verifies 429 on official triggers internal fallback.
+func TestPexelsProviderSearch_FallsBackToInternal(t *testing.T) {
+	t.Parallel()
+
+	officialSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(officialSrv.Close)
+
+	internalSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(buildPexelsInternalJSON([]pexelsInternalItem{
+			{Attributes: pexelsInternalAttrs{
+				ID: 99, Slug: "fallback", Title: "Fallback Photo",
+				Image: pexelsInternalImage{DownloadLink: "https://img.pexels.com/99.jpg"},
+			}},
+		}))
+	}))
+	t.Cleanup(internalSrv.Close)
+
+	p := &PexelsProvider{
+		APIKey:       "key",
+		SecretKey:    "secret",
+		HTTPClient:   http.DefaultClient,
+		officialBase: officialSrv.URL,
+		internalBase: internalSrv.URL,
+	}
+	candidates, err := p.Search(context.Background(), "test", SearchOpts{})
+	if err != nil {
+		t.Fatalf("Search returned error: %v (expected fallback to internal)", err)
+	}
+	if len(candidates) == 0 {
+		t.Fatal("expected candidates from internal API fallback")
+	}
+	if candidates[0].Title != "Fallback Photo" {
+		t.Errorf("Title = %q, want %q", candidates[0].Title, "Fallback Photo")
+	}
+}
+
+// TestPexelsProviderSearch_InternalOnlyWhenNoAPIKey verifies no APIKey uses internal directly.
+func TestPexelsProviderSearch_InternalOnlyWhenNoAPIKey(t *testing.T) {
+	t.Parallel()
+
+	var usedSecret bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Secret-Key") != "" {
+			usedSecret = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(buildPexelsInternalJSON([]pexelsInternalItem{
+			{Attributes: pexelsInternalAttrs{
+				ID: 42, Slug: "internal-only", Title: "Internal Only",
+				Image: pexelsInternalImage{DownloadLink: "https://img.pexels.com/42.jpg"},
+			}},
+		}))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &PexelsProvider{
+		SecretKey:    "secret",
+		HTTPClient:   srv.Client(),
+		internalBase: srv.URL,
+	}
+	candidates, err := p.Search(context.Background(), "test", SearchOpts{})
+	if err != nil {
+		t.Fatalf("Search returned error: %v", err)
+	}
+	if !usedSecret {
+		t.Error("expected internal API (Secret-Key header) to be used")
+	}
+	if len(candidates) == 0 {
+		t.Error("expected candidates from internal API")
+	}
+}
+
+// TestPexelsProviderSearch_NoBothKeys verifies that no keys configured returns an error.
+func TestPexelsProviderSearch_NoBothKeys(t *testing.T) {
+	t.Parallel()
+
+	p := &PexelsProvider{}
+	_, err := p.Search(context.Background(), "test", SearchOpts{})
+	if err == nil {
+		t.Error("expected error when no API key or secret key configured, got nil")
+	}
+}
