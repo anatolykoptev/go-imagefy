@@ -33,7 +33,7 @@ type PexelsProvider struct {
 // Name returns the provider name.
 func (p *PexelsProvider) Name() string { return "pexels" }
 
-// --- Official API types ---
+// --- Types ---
 
 type pexelsSrc struct {
 	Large string `json:"large"`
@@ -47,8 +47,6 @@ type pexelsOfficialPhoto struct {
 	Src pexelsSrc `json:"src"`
 }
 
-// --- Internal API types ---
-
 type pexelsInternalImage struct {
 	Small        string `json:"small"`
 	DownloadLink string `json:"download_link"`
@@ -59,36 +57,25 @@ type pexelsInternalUser struct {
 }
 
 type pexelsInternalAttrs struct {
-	ID          int                 `json:"id"`
-	Slug        string              `json:"slug"`
-	Title       string              `json:"title"`
-	Description string              `json:"description"`
-	Width       int                 `json:"width"`
-	Height      int                 `json:"height"`
-	Image       pexelsInternalImage `json:"image"`
-	User        pexelsInternalUser  `json:"user"`
+	ID    int                 `json:"id"`
+	Slug  string              `json:"slug"`
+	Title string              `json:"title"`
+	Image pexelsInternalImage `json:"image"`
+	User  pexelsInternalUser  `json:"user"`
 }
 
 type pexelsInternalItem struct {
 	Attributes pexelsInternalAttrs `json:"attributes"`
 }
 
-// --- Official API search ---
+// --- Shared HTTP fetch ---
 
-func (p *PexelsProvider) searchOfficial(ctx context.Context, baseURL, query string, opts SearchOpts) ([]ImageCandidate, error) {
-	page := opts.PageNumber
-	if page < 1 {
-		page = 1
-	}
-
-	searchURL := fmt.Sprintf("%s/search?query=%s&per_page=%d&page=%d",
-		strings.TrimRight(baseURL, "/"), url.QueryEscape(query), pexelsPerPage, page)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+func (p *PexelsProvider) doGet(ctx context.Context, rawURL, headerKey, headerVal string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", p.APIKey)
+	req.Header.Set(headerKey, headerVal)
 	if p.UserAgent != "" {
 		req.Header.Set("User-Agent", p.UserAgent)
 	}
@@ -105,38 +92,87 @@ func (p *PexelsProvider) searchOfficial(ctx context.Context, baseURL, query stri
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("pexels official: unexpected status %d", resp.StatusCode)
+		return nil, fmt.Errorf("pexels: unexpected status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, pexelsBodyLimit))
+	return io.ReadAll(io.LimitReader(resp.Body, pexelsBodyLimit))
+}
+
+func pexelsPageParam(opts SearchOpts) int {
+	if opts.PageNumber < 1 {
+		return 1
+	}
+	return opts.PageNumber
+}
+
+// --- Official API search ---
+
+func (p *PexelsProvider) searchOfficial(ctx context.Context, baseURL, query string, opts SearchOpts) ([]ImageCandidate, error) {
+	searchURL := fmt.Sprintf("%s/search?query=%s&per_page=%d&page=%d",
+		strings.TrimRight(baseURL, "/"), url.QueryEscape(query), pexelsPerPage, pexelsPageParam(opts))
+
+	body, err := p.doGet(ctx, searchURL, "Authorization", p.APIKey)
 	if err != nil {
 		return nil, err
 	}
 
-	var searchResp struct {
+	var resp struct {
 		Photos []pexelsOfficialPhoto `json:"photos"`
 	}
-	if err := json.Unmarshal(body, &searchResp); err != nil {
+	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
 	}
 
-	return filterOfficialResults(searchResp.Photos), nil
+	return filterOfficialResults(resp.Photos), nil
 }
 
 func filterOfficialResults(photos []pexelsOfficialPhoto) []ImageCandidate {
 	var candidates []ImageCandidate
 	for _, photo := range photos {
-		if photo.Src.Large == "" {
-			continue
-		}
-		if IsLogoOrBanner(strings.ToLower(photo.Src.Large)) {
+		if photo.Src.Large == "" || IsLogoOrBanner(strings.ToLower(photo.Src.Large)) {
 			continue
 		}
 		candidates = append(candidates, ImageCandidate{
-			ImgURL:    photo.Src.Large,
-			Thumbnail: photo.Src.Small,
-			Source:    photo.URL,
-			Title:     photo.Alt,
+			ImgURL: photo.Src.Large, Thumbnail: photo.Src.Small,
+			Source: photo.URL, Title: photo.Alt, License: LicenseSafe,
+		})
+	}
+	return candidates
+}
+
+// --- Internal API search ---
+
+func (p *PexelsProvider) searchInternal(ctx context.Context, baseURL, query string, opts SearchOpts) ([]ImageCandidate, error) {
+	searchURL := fmt.Sprintf("%s?query=%s&per_page=%d&page=%d",
+		strings.TrimRight(baseURL, "/"), url.QueryEscape(query), pexelsPerPage, pexelsPageParam(opts))
+
+	body, err := p.doGet(ctx, searchURL, "Secret-Key", p.SecretKey)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data []pexelsInternalItem `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+
+	return filterInternalResults(resp.Data), nil
+}
+
+func filterInternalResults(items []pexelsInternalItem) []ImageCandidate {
+	var candidates []ImageCandidate
+	for _, item := range items {
+		a := item.Attributes
+		if a.Image.DownloadLink == "" || IsLogoOrBanner(strings.ToLower(a.Image.DownloadLink)) {
+			continue
+		}
+		candidates = append(candidates, ImageCandidate{
+			ImgURL:    a.Image.DownloadLink,
+			Thumbnail: a.Image.Small,
+			Source:    fmt.Sprintf("https://www.pexels.com/photo/%s-%d/", a.Slug, a.ID),
+			Title:     a.Title,
 			License:   LicenseSafe,
 		})
 	}

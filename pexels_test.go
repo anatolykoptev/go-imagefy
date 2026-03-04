@@ -87,3 +87,62 @@ func TestPexelsProviderSearch_OfficialAPI(t *testing.T) {
 		t.Errorf("License = %v, want LicenseSafe", got.License)
 	}
 }
+
+// TestPexelsProviderSearch_InternalAPI tests searchInternal with httptest,
+// verifies Secret-Key header and field mapping.
+func TestPexelsProviderSearch_InternalAPI(t *testing.T) {
+	t.Parallel()
+
+	var capturedSecret string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSecret = r.Header.Get("Secret-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(buildPexelsInternalJSON([]pexelsInternalItem{
+			{Attributes: pexelsInternalAttrs{
+				ID:    67890,
+				Slug:  "mountain-lake",
+				Title: "Mountain Lake",
+				Image: pexelsInternalImage{
+					Small:        "https://images.pexels.com/photos/67890/small.jpeg",
+					DownloadLink: "https://images.pexels.com/photos/67890/download.jpeg",
+				},
+				User: pexelsInternalUser{Username: "photographer"},
+			}},
+		}))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &PexelsProvider{
+		SecretKey:    "test-secret-key",
+		HTTPClient:   srv.Client(),
+		internalBase: srv.URL,
+	}
+	candidates, err := p.searchInternal(context.Background(), srv.URL, "mountain", SearchOpts{})
+	if err != nil {
+		t.Fatalf("searchInternal returned error: %v", err)
+	}
+
+	if capturedSecret != "test-secret-key" {
+		t.Errorf("Secret-Key header = %q, want %q", capturedSecret, "test-secret-key")
+	}
+	if len(candidates) == 0 {
+		t.Fatal("searchInternal returned no candidates, expected 1")
+	}
+
+	got := candidates[0]
+	if got.ImgURL != "https://images.pexels.com/photos/67890/download.jpeg" {
+		t.Errorf("ImgURL = %q, want download_link", got.ImgURL)
+	}
+	if got.Thumbnail != "https://images.pexels.com/photos/67890/small.jpeg" {
+		t.Errorf("Thumbnail = %q, want small image", got.Thumbnail)
+	}
+	if got.Source != "https://www.pexels.com/photo/mountain-lake-67890/" {
+		t.Errorf("Source = %q, want constructed photo URL", got.Source)
+	}
+	if got.Title != "Mountain Lake" {
+		t.Errorf("Title = %q, want %q", got.Title, "Mountain Lake")
+	}
+	if got.License != LicenseSafe {
+		t.Errorf("License = %v, want LicenseSafe", got.License)
+	}
+}
