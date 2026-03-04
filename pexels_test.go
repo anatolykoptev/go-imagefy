@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -265,5 +266,123 @@ func TestPexelsProviderSearch_NoBothKeys(t *testing.T) {
 	_, err := p.Search(context.Background(), "test", SearchOpts{})
 	if err == nil {
 		t.Error("expected error when no API key or secret key configured, got nil")
+	}
+}
+
+func TestPexelsProviderSearch_EmptyResults(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(buildPexelsOfficialJSON(nil))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &PexelsProvider{APIKey: "key", HTTPClient: srv.Client(), officialBase: srv.URL}
+	candidates, err := p.Search(context.Background(), "nothing", SearchOpts{})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Errorf("got %d candidates, want 0", len(candidates))
+	}
+}
+
+func TestPexelsProviderSearch_Pagination(t *testing.T) {
+	t.Parallel()
+
+	var capturedRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(buildPexelsOfficialJSON(nil))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &PexelsProvider{APIKey: "key", HTTPClient: srv.Client(), officialBase: srv.URL}
+	_, _ = p.Search(context.Background(), "sky", SearchOpts{PageNumber: 5})
+
+	q, _ := url.ParseQuery(capturedRawQuery)
+	if q.Get("page") != "5" {
+		t.Errorf("page = %q, want %q", q.Get("page"), "5")
+	}
+}
+
+func TestPexelsProviderSearch_HTTPError(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &PexelsProvider{APIKey: "key", HTTPClient: srv.Client(), officialBase: srv.URL}
+	_, err := p.Search(context.Background(), "test", SearchOpts{})
+
+	if err == nil {
+		t.Error("expected error for 500 response")
+	}
+}
+
+func TestPexelsProviderSearch_ConnectionError(t *testing.T) {
+	t.Parallel()
+
+	p := &PexelsProvider{APIKey: "key", officialBase: "http://127.0.0.1:1"}
+	_, err := p.Search(context.Background(), "test", SearchOpts{})
+
+	if err == nil {
+		t.Error("expected connection error")
+	}
+}
+
+func TestPexelsProviderSearch_EmptyDownloadLinkSkipped(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(buildPexelsInternalJSON([]pexelsInternalItem{
+			{Attributes: pexelsInternalAttrs{
+				ID: 1, Slug: "empty", Title: "Empty",
+				Image: pexelsInternalImage{Small: "https://img.pexels.com/s.jpg", DownloadLink: ""},
+				User:  pexelsInternalUser{Username: "u"},
+			}},
+		}))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &PexelsProvider{SecretKey: "key", HTTPClient: srv.Client(), internalBase: srv.URL}
+	candidates, _ := p.Search(context.Background(), "test", SearchOpts{})
+
+	if len(candidates) != 0 {
+		t.Errorf("got %d candidates, want 0 (empty download_link should be skipped)", len(candidates))
+	}
+}
+
+func TestPexelsProviderSearch_AllResultsAreLicenseSafe(t *testing.T) {
+	t.Parallel()
+
+	photos := []pexelsOfficialPhoto{
+		{ID: 1, URL: "https://pexels.com/1", Alt: "A", Src: pexelsSrc{Large: "https://img.pexels.com/1.jpg", Small: "https://img.pexels.com/1s.jpg"}},
+		{ID: 2, URL: "https://pexels.com/2", Alt: "B", Src: pexelsSrc{Large: "https://img.pexels.com/2.jpg", Small: "https://img.pexels.com/2s.jpg"}},
+		{ID: 3, URL: "https://pexels.com/3", Alt: "C", Src: pexelsSrc{Large: "https://img.pexels.com/3.jpg", Small: "https://img.pexels.com/3s.jpg"}},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(buildPexelsOfficialJSON(photos))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := &PexelsProvider{APIKey: "key", HTTPClient: srv.Client(), officialBase: srv.URL}
+	candidates, err := p.Search(context.Background(), "nature", SearchOpts{})
+
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	for i, c := range candidates {
+		if c.License != LicenseSafe {
+			t.Errorf("candidates[%d].License = %v, want LicenseSafe", i, c.License)
+		}
 	}
 }
