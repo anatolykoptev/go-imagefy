@@ -149,8 +149,23 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 		return
 	}
 
-	// Download once for both dedup and metadata extraction.
-	data, img := cfg.downloadForValidation(ctx, cand.ImgURL)
+	// Cheap extra-domain pre-check before downloading (avoids download for known-blocked domains).
+	if len(cfg.ExtraBlockedDomains) > 0 {
+		if CheckLicenseWith(cand.ImgURL, cand.Source, cfg.ExtraBlockedDomains, nil) == LicenseBlocked {
+			slog.Debug("imagefy: blocked by extra domain pre-check", "url", cand.ImgURL)
+			if cfg.OnClassification != nil {
+				cfg.OnClassification(ClassificationEvent{
+					URL:    cand.ImgURL,
+					Class:  ClassStock,
+					Source: "license_assessment",
+				})
+			}
+			return
+		}
+	}
+
+	// Download once for dedup, metadata extraction, and potential LLM classification.
+	data, mimeType, img := cfg.downloadForValidation(ctx, cand.ImgURL)
 
 	// Dedup check using perceptual hash.
 	if img != nil {
@@ -194,9 +209,10 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 		return
 	}
 
-	// Unknown license — fall through to LLM classification.
-	if !cfg.IsRealPhoto(ctx, cand.ImgURL) {
-		slog.Debug("imagefy: vision rejected", "url", cand.ImgURL)
+	// Unknown license — classify using pre-downloaded data (avoids redundant download).
+	result := cfg.classifyPredownloaded(ctx, cand.ImgURL, data, mimeType)
+	if result.Class != ClassPhoto && result.Class != "" {
+		slog.Debug("imagefy: vision rejected", "url", cand.ImgURL, "class", result.Class)
 		return
 	}
 	mu.Lock()
