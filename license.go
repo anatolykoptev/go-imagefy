@@ -123,7 +123,7 @@ func isBlockedWith(rawURL string, extra []string) bool {
 			}
 		}
 		for _, d := range extra {
-			if strings.Contains(host, d) {
+			if d != "" && strings.Contains(host, d) {
 				return true
 			}
 		}
@@ -150,7 +150,7 @@ func isSafeWith(rawURL string, extra []string) bool {
 		}
 	}
 	for _, d := range extra {
-		if strings.Contains(host, d) {
+		if d != "" && strings.Contains(host, d) {
 			return true
 		}
 	}

@@ -1,5 +1,7 @@
 package imagefy
 
+import "strings"
+
 // LicenseSignal represents a single evidence point about an image's license status.
 type LicenseSignal struct {
 	Source  string       // signal source: "domain", "extra_domain", "metadata_stock", "metadata_cc", "url_pattern"
@@ -20,19 +22,23 @@ func (cfg *Config) AssessLicense(cand ImageCandidate, meta *ImageMetadata) Licen
 	signals := make([]LicenseSignal, 0, 4) //nolint:mnd // pre-allocate for up to 4 signal types
 
 	// Signal 1: search-time domain classification (already set by provider).
-	switch cand.License {
-	case LicenseBlocked:
-		signals = append(signals, LicenseSignal{
-			Source:  "domain",
-			Detail:  "blocked by search-time domain check: " + cand.Source,
-			License: LicenseBlocked,
-		})
-	case LicenseSafe:
-		signals = append(signals, LicenseSignal{
-			Source:  "domain",
-			Detail:  "safe by search-time domain check: " + cand.Source,
-			License: LicenseSafe,
-		})
+	// Guard: only emit when candidate has URL data (LicenseSafe is iota zero
+	// value, so a zero-value ImageCandidate would falsely match without this).
+	if cand.ImgURL != "" || cand.Source != "" {
+		switch cand.License {
+		case LicenseBlocked:
+			signals = append(signals, LicenseSignal{
+				Source:  "domain",
+				Detail:  "blocked by search-time domain check: " + cand.Source,
+				License: LicenseBlocked,
+			})
+		case LicenseSafe:
+			signals = append(signals, LicenseSignal{
+				Source:  "domain",
+				Detail:  "safe by search-time domain check: " + cand.Source,
+				License: LicenseSafe,
+			})
+		}
 	}
 
 	// Signal 2: extended domain check — only when extra lists are configured.
@@ -84,8 +90,8 @@ func (cfg *Config) AssessLicense(cand ImageCandidate, meta *ImageMetadata) Licen
 	}
 }
 
-// metadataStockDetail returns the first non-empty rights field for context
-// in a stock-detection signal.
+// metadataStockDetail returns the metadata field that triggered the stock
+// detection (the first field containing a matching keyword).
 func metadataStockDetail(meta *ImageMetadata) string {
 	if meta == nil {
 		return ""
@@ -100,8 +106,14 @@ func metadataStockDetail(meta *ImageMetadata) string {
 		meta.DCRights,
 		meta.DCCreator,
 	} {
-		if f != "" {
-			return f
+		if f == "" {
+			continue
+		}
+		lower := strings.ToLower(f)
+		for _, kw := range stockMetadataKeywords {
+			if containsWord(lower, kw) {
+				return f
+			}
 		}
 	}
 	return ""

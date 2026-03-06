@@ -198,6 +198,63 @@ func (cfg *Config) doClassifyFull(ctx context.Context, imageURL string) Classifi
 	return result
 }
 
+// classifyPredownloaded classifies an already-downloaded image, avoiding a
+// redundant HTTP download. Uses the same cache key as ClassifyImageFull.
+func (cfg *Config) classifyPredownloaded(ctx context.Context, imageURL string, data []byte, mimeType string) ClassificationResult {
+	cfg.defaults()
+
+	if cfg.Classifier == nil {
+		return ClassificationResult{} // no classifier → accept
+	}
+
+	if cfg.Cache != nil {
+		cacheKey := cfg.Cache.Key("vision_cls_v2", imageURL)
+		var cached ClassificationResult
+		if cfg.Cache.Get(ctx, cacheKey, &cached) {
+			return cached
+		}
+		result := cfg.doClassifyFromData(ctx, imageURL, data, mimeType)
+		cfg.Cache.Set(ctx, cacheKey, result)
+		return result
+	}
+
+	return cfg.doClassifyFromData(ctx, imageURL, data, mimeType)
+}
+
+// doClassifyFromData classifies an image using pre-downloaded data.
+func (cfg *Config) doClassifyFromData(ctx context.Context, imageURL string, data []byte, mimeType string) ClassificationResult {
+	if len(data) == 0 {
+		return ClassificationResult{} // no data → accept
+	}
+
+	dataURL := EncodeDataURL(data, mimeType)
+
+	prompt := cfg.VisionPrompt
+	if prompt == "" {
+		prompt = DefaultVisionPrompt
+	}
+
+	resp, err := cfg.Classifier.Classify(ctx, prompt, []ImageInput{{URL: dataURL}})
+	if err != nil {
+		slog.Debug("imagefy: vision LLM error", "url", imageURL, "error", err.Error())
+		return ClassificationResult{} // LLM error → accept
+	}
+
+	slog.Debug("imagefy: vision result", "url", imageURL, "response", resp)
+	result := ParseClassificationResult(resp)
+
+	if cfg.OnClassification != nil {
+		cfg.OnClassification(ClassificationEvent{
+			URL:        imageURL,
+			Class:      result.Class,
+			Confidence: result.Confidence,
+			Source:     "llm",
+		})
+	}
+
+	return result
+}
+
 // ParseVisionResponse normalizes an LLM response to one of: "PHOTO", "STOCK", "REJECT", or "".
 //
 // Deprecated: Only handles the legacy 3-class prompt. Responses from [DefaultVisionPrompt]

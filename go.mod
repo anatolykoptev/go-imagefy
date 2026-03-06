@@ -1,6 +1,6 @@
 module github.com/anatolykoptev/go-imagefy
 
-go 1.25.0
+go 1.26
 
 require (
 	github.com/bep/imagemeta v0.17.0

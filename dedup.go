@@ -48,20 +48,21 @@ func (d *dedupFilter) isDuplicate(img image.Image) bool {
 	return false
 }
 
-// downloadForValidation fetches the image and returns both raw bytes and decoded image.
-// Raw bytes are used for metadata extraction; decoded image is used for perceptual dedup.
-// Returns (nil, nil) on any recoverable failure for graceful degradation.
-func (cfg *Config) downloadForValidation(ctx context.Context, url string) ([]byte, image.Image) {
+// downloadForValidation fetches the image and returns raw bytes, MIME type, and decoded image.
+// Raw bytes are used for metadata extraction and pre-downloaded classification;
+// decoded image is used for perceptual dedup.
+// Returns (nil, "", nil) on any recoverable failure for graceful degradation.
+func (cfg *Config) downloadForValidation(ctx context.Context, url string) ([]byte, string, image.Image) {
 	result, err := cfg.Download(ctx, url, DownloadOpts{})
 	if err != nil || result == nil {
-		return nil, nil
+		return nil, "", nil
 	}
 
 	img, _, err := image.Decode(bytes.NewReader(result.Data))
 	if err != nil {
 		// Raw bytes available for metadata even if image decode fails.
-		return result.Data, nil
+		return result.Data, result.MIMEType, nil
 	}
 
-	return result.Data, img
+	return result.Data, result.MIMEType, img
 }

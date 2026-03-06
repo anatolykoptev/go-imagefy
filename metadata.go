@@ -53,7 +53,7 @@ var stockMetadataKeywords = []string{
 }
 
 // IsStockByMetadata reports whether the image metadata contains fingerprints
-// of a known stock-photo agency (case-insensitive substring match).
+// of a known stock-photo agency (case-insensitive word-boundary match).
 func IsStockByMetadata(meta *ImageMetadata) bool {
 	if meta == nil {
 		return false
@@ -74,12 +74,35 @@ func IsStockByMetadata(meta *ImageMetadata) bool {
 		}
 		lower := strings.ToLower(f)
 		for _, kw := range stockMetadataKeywords {
-			if strings.Contains(lower, kw) {
+			if containsWord(lower, kw) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// containsWord reports whether text contains word at a word boundary.
+// A word boundary is the start/end of text or a non-alphanumeric character.
+func containsWord(text, word string) bool {
+	for {
+		idx := strings.Index(text, word)
+		if idx < 0 {
+			return false
+		}
+		end := idx + len(word)
+		leftOK := idx == 0 || !isWordChar(text[idx-1])
+		rightOK := end >= len(text) || !isWordChar(text[end])
+		if leftOK && rightOK {
+			return true
+		}
+		text = text[idx+1:]
+	}
+}
+
+// isWordChar reports whether b is an ASCII alphanumeric character.
+func isWordChar(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // IsCCByMetadata reports whether the image metadata contains a Creative
@@ -96,13 +119,6 @@ func IsCCByMetadata(meta *ImageMetadata) bool {
 	} {
 		if IsCCLicenseURL(f) {
 			return true
-		}
-		// Also check if a CC URL appears as a substring (e.g. in free-text fields).
-		lower := strings.ToLower(f)
-		for _, seg := range ccLicensePathSegments {
-			if strings.Contains(lower, seg) {
-				return true
-			}
 		}
 	}
 	return false
