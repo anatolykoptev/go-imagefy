@@ -50,6 +50,28 @@
 - [x] **Classification audit log** — `Config.OnClassification` callback receives `ClassificationEvent` for every decision (both LLM and pre-filter), with URL, class, confidence, and source.
 - [x] **Cost-tier routing** — `PreClassify` pre-filter skips LLM for `LicenseSafe` sources (Openverse, Unsplash, Pixabay). Auto-accepts as PHOTO without API call.
 
+## Phase 2.5 — ox-browser Integration + Parallel Search
+
+**Goal:** Replace Go-based scrapers with ox-browser Rust backend for image search,
+add parallel provider execution and orchestration.
+
+- [ ] **OxBrowserProvider** — new `SearchProvider` that calls ox-browser `POST /images/search` REST endpoint. Delegates all scraping (Bing, DDG, Yandex, Brave) to Rust with wreq+BoringSSL TLS fingerprint, proxy rotation, CF bypass.
+- [ ] **Parallel gatherCandidates** — replace sequential provider loop with `sync.WaitGroup` + goroutine-per-provider. Context-aware early cancel when enough candidates collected.
+- [ ] **FallbackProvider** — orchestrator that tries providers in order until one succeeds. For API fallback (Openverse down → Pexels).
+- [ ] **Connect PexelsProvider** — already implemented, just needs wiring in consumers via `PEXELS_API_KEY` env var.
+- [ ] **Preserve DDGImageProvider** as fallback — when ox-browser is unavailable, fall back to existing Go DDG provider.
+
+**Architecture:**
+- ox-browser (Rust) handles all scraping: TLS fingerprint, anti-bot, proxy rotation, CF bypass, HTML/JSON parsing
+- go-imagefy handles validation: license check, perceptual dedup, metadata extraction, LLM classification
+- Clean separation: Rust scrapes, Go validates
+
+**Consumer changes (go-wp):**
+- `imageadapter/adapter.go` — switch primary provider to OxBrowserProvider, add Pexels
+- `media/upload.go` — fix `http.DefaultClient` → proxied stealth client
+
+**Depends on:** ox-browser Phase 4.6 (image search crate)
+
 ## Phase 3 — Image Processing
 
 **Goal:** basic image manipulation for editorial pipelines.

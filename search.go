@@ -82,19 +82,28 @@ func (cfg *Config) resolveProviders() []SearchProvider {
 	return nil
 }
 
-// gatherCandidates collects image candidates from all providers.
-// Each provider is called sequentially; errors are logged and skipped so
+// gatherCandidates collects image candidates from all providers in parallel.
+// Each provider runs in its own goroutine; errors are logged and skipped so
 // that remaining providers still contribute results.
 func (cfg *Config) gatherCandidates(ctx context.Context, providers []SearchProvider, query string, opts SearchOpts) []ImageCandidate {
+	var mu sync.Mutex
 	var all []ImageCandidate
+	var wg sync.WaitGroup
 	for _, p := range providers {
-		results, err := p.Search(ctx, query, opts)
-		if err != nil {
-			slog.Warn("imagefy: provider search failed", "provider", p.Name(), "error", err.Error())
-			continue
-		}
-		all = append(all, results...)
+		wg.Add(1)
+		go func(p SearchProvider) {
+			defer wg.Done()
+			results, err := p.Search(ctx, query, opts)
+			if err != nil {
+				slog.Warn("imagefy: provider search failed", "provider", p.Name(), "error", err)
+				return
+			}
+			mu.Lock()
+			all = append(all, results...)
+			mu.Unlock()
+		}(p)
 	}
+	wg.Wait()
 	return all
 }
 
