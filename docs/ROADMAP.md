@@ -55,11 +55,11 @@
 **Goal:** Replace Go-based scrapers with ox-browser Rust backend for image search,
 add parallel provider execution and orchestration.
 
-- [ ] **OxBrowserProvider** — new `SearchProvider` that calls ox-browser `POST /images/search` REST endpoint. Delegates all scraping (Bing, DDG, Yandex, Brave) to Rust with wreq+BoringSSL TLS fingerprint, proxy rotation, CF bypass.
-- [ ] **Parallel gatherCandidates** — replace sequential provider loop with `sync.WaitGroup` + goroutine-per-provider. Context-aware early cancel when enough candidates collected.
-- [ ] **FallbackProvider** — orchestrator that tries providers in order until one succeeds. For API fallback (Openverse down → Pexels).
-- [ ] **Connect PexelsProvider** — already implemented, just needs wiring in consumers via `PEXELS_API_KEY` env var.
-- [ ] **Preserve DDGImageProvider** as fallback — when ox-browser is unavailable, fall back to existing Go DDG provider.
+- [x] **OxBrowserProvider** — `SearchProvider` that calls ox-browser `POST /images/search` REST endpoint. Delegates Bing + DDG scraping to Rust with wreq+BoringSSL TLS fingerprint, proxy rotation, CF bypass. 8 tests.
+- [x] **Parallel gatherCandidates** — replaced sequential provider loop with `sync.WaitGroup` + goroutine-per-provider.
+- [x] **FallbackProvider** — orchestrator that tries providers in order until one succeeds. 6 tests.
+- [x] **Connect PexelsProvider** — wired in go-wp imageadapter via `PEXELS_API_KEY` env var.
+- [x] **Preserve DDGImageProvider** as fallback — when ox-browser is unavailable, falls back to existing Go DDG provider.
 
 **Architecture:**
 - ox-browser (Rust) handles all scraping: TLS fingerprint, anti-bot, proxy rotation, CF bypass, HTML/JSON parsing
