@@ -107,6 +107,18 @@ func (cfg *Config) gatherCandidates(ctx context.Context, providers []SearchProvi
 	return all
 }
 
+// ValidateCandidates runs external image candidates through the full filter
+// pipeline: URL validation, license check, dedup, metadata assessment, and
+// LLM vision classification. Use this to validate images from sources outside
+// the built-in search providers (e.g. WP media library, user-supplied URLs).
+func (cfg *Config) ValidateCandidates(ctx context.Context, candidates []ImageCandidate, maxResults int) []ImageCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	cfg.defaults()
+	return cfg.validateCandidates(ctx, candidates, maxResults)
+}
+
 func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCandidate, maxResults int) []ImageCandidate {
 	sem := make(chan struct{}, validationSemaphore)
 	var mu sync.Mutex
