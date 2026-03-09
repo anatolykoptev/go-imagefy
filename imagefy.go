@@ -64,6 +64,7 @@ type SearchOpts struct {
 	PageNumber int           // SearXNG page number (default: 1)
 	Engines    []string      // SearXNG engines to use (default: all)
 	Timeout    time.Duration // search timeout (default: 15s)
+	PageURL    string        // page URL for OG image extraction (used by OGImageProvider)
 }
 
 // defaults fills zero-value fields with sensible defaults.
