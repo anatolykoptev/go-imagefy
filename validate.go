@@ -35,16 +35,7 @@ func (cfg *Config) ValidateImageURL(ctx context.Context, rawURL string) bool {
 	}
 	req.Header.Set("User-Agent", cfg.UserAgent)
 
-	client := &http.Client{
-		Timeout: defaultTimeout,
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
-			const maxRedirects = 3
-			if len(via) >= maxRedirects {
-				return errors.New("too many redirects")
-			}
-			return nil
-		},
-	}
+	client := cfg.validationClient()
 	resp, err := client.Do(req) //nolint:gosec // G704: URL is caller-supplied by design — SSRF is caller's responsibility
 	if err != nil {
 		return false
@@ -72,4 +63,25 @@ func (cfg *Config) ValidateImageURL(ctx context.Context, rawURL string) bool {
 	}
 
 	return true
+}
+
+// validationClient returns an HTTP client that respects cfg.StealthClient / cfg.HTTPClient
+// while enforcing a redirect limit and timeout suitable for image validation.
+func (cfg *Config) validationClient() *http.Client {
+	base := cfg.HTTPClient
+	if cfg.StealthClient != nil {
+		base = cfg.StealthClient
+	}
+	return &http.Client{
+		Transport: base.Transport,
+		Timeout:   defaultTimeout,
+		Jar:       base.Jar,
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			const maxRedirects = 3
+			if len(via) >= maxRedirects {
+				return errors.New("too many redirects")
+			}
+			return nil
+		},
+	}
 }

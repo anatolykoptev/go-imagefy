@@ -6,10 +6,16 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+// roundTripFunc adapts a function to http.RoundTripper for testing.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // makeJPEG returns a minimal valid JPEG of the given dimensions.
 func makeJPEG(w, h int) []byte {
@@ -83,6 +89,72 @@ func TestValidateImageURL_NonImageContentTypeRejected(t *testing.T) {
 	cfg := &Config{}
 	if cfg.ValidateImageURL(context.Background(), srv.URL+"/page.html") {
 		t.Error("expected non-image content type to fail validation")
+	}
+}
+
+func TestValidateImageURL_UsesConfigHTTPClient(t *testing.T) {
+	called := false
+	body := makeJPEG(1000, 600)
+
+	transport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})
+
+	cfg := &Config{
+		HTTPClient: &http.Client{
+			Transport: transport,
+		},
+		MinImageWidth: 880,
+	}
+
+	result := cfg.ValidateImageURL(context.Background(), "http://example.com/photo.jpg")
+	if !called {
+		t.Fatal("expected configured HTTPClient transport to be used, but it was not called")
+	}
+	if !result {
+		t.Error("expected validation to pass for a valid wide JPEG")
+	}
+}
+
+func TestValidateImageURL_PrefersStealthClient(t *testing.T) {
+	httpCalled := false
+	stealthCalled := false
+	body := makeJPEG(1000, 600)
+
+	httpTransport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		httpCalled = true
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})
+	stealthTransport := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		stealthCalled = true
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})
+
+	cfg := &Config{
+		HTTPClient:    &http.Client{Transport: httpTransport},
+		StealthClient: &http.Client{Transport: stealthTransport},
+		MinImageWidth: 880,
+	}
+
+	cfg.ValidateImageURL(context.Background(), "http://example.com/photo.jpg")
+	if httpCalled {
+		t.Error("expected HTTPClient transport NOT to be used when StealthClient is set")
+	}
+	if !stealthCalled {
+		t.Fatal("expected StealthClient transport to be used, but it was not called")
 	}
 }
 
