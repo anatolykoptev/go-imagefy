@@ -297,7 +297,7 @@ func TestSearchImagesWithOptsCustomTimeout(t *testing.T) {
 func TestSearchImagesWithOptsZeroTimeout_UsesDefault(t *testing.T) {
 	t.Parallel()
 
-	// Zero Timeout in opts should fall back to searxngTimeout (15s).
+	// Zero Timeout in opts should fall back to searchTimeout (30s).
 	// We just verify the search completes normally (no immediate context cancellation).
 	imgSrv := newJPEGServer(t)
 	imgURL := imgSrv.URL + "/photo.jpg"

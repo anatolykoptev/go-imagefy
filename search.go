@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	searxngTimeout      = 15 * time.Second
+	searchTimeout       = 30 * time.Second
 	validationSemaphore = 3
 )
 
@@ -42,7 +42,7 @@ func (cfg *Config) SearchImagesWithOpts(ctx context.Context, query string, maxRe
 		cfg.OnImageSearch()
 	}
 
-	timeout := searxngTimeout
+	timeout := searchTimeout
 	if opts.Timeout > 0 {
 		timeout = opts.Timeout
 	}
