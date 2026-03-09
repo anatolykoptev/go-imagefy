@@ -123,27 +123,36 @@ results := cfg.SearchImagesWithOpts(ctx, "city park", 10, imagefy.SearchOpts{
 
 ## Architecture
 
+> Full architecture doc: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
 ```
 Layer 0 (pure logic, no I/O)
-├── license.go      — CheckLicense, CheckLicenseWith, blocked/safe domain lists
-├── metadata.go     — ExtractImageMetadata, IsStockByMetadata, IsCCByMetadata
-├── cc.go           — ExtractCCLicense, IsCCLicenseURL
-├── assess.go       — AssessLicense, LicenseAssessment with signals
-├── patterns.go     — IsLogoOrBanner, URL pattern detection
-├── query.go        — BuildImageQuery, stop word filtering
-├── helpers.go      — ExtractOGImageURL, EncodeDataURL, EncodeBase64
-└── prefilter.go    — PreClassify cost-tier routing
+├── license.go        — CheckLicense, CheckLicenseWith, blocked/safe domain lists
+├── metadata.go       — ExtractImageMetadata, IsStockByMetadata, IsCCByMetadata
+├── cclicense.go      — ExtractCCLicense, IsCCLicenseURL
+├── assessment.go     — AssessLicense, LicenseAssessment with signals
+├── patterns.go       — IsLogoOrBanner, URL pattern detection
+├── query.go          — BuildImageQuery, stop word filtering
+├── helpers.go        — ExtractOGImageURL, EncodeDataURL, EncodeBase64
+├── prefilter.go      — PreClassify cost-tier routing
+└── imagefy.go        — Config, interfaces, SearchOpts, defaults()
 
 Layer 1 (HTTP, no external services beyond target URLs)
-├── download.go     — Download with stealth fallback
-├── validate.go     — ValidateImageURL (HTTP probe + dimension check)
-└── dedup.go        — Perceptual hash dedup (dHash + Hamming distance)
+├── download.go       — Download with stealth fallback
+├── validate.go       — ValidateImageURL (HTTP probe, proxy-aware)
+└── dedup.go          — Perceptual hash dedup (dHash + Hamming distance)
 
 Layer 2 (orchestration, uses interfaces)
-├── classify.go     — ClassifyImage / ClassifyImageFull / IsRealPhoto
-├── search.go       — SearchImages / SearchImagesWithOpts (pipeline)
-├── provider.go     — SearchProvider interface, SearXNGProvider
-└── openverse.go    — OpenverseProvider (Openverse API client)
+├── find.go           — FindImages (unified entry point)
+├── search.go         — SearchImages / SearchImagesWithOpts (pipeline)
+├── classify.go       — ClassifyImage / ClassifyImageFull / IsRealPhoto
+├── provider.go       — SearchProvider interface, SearXNGProvider
+├── openverse.go      — OpenverseProvider (Openverse API)
+├── pexels.go         — PexelsProvider (Pexels API)
+├── provider_ox.go    — OxBrowserProvider (ox-browser REST)
+├── provider_og.go    — OGImageProvider (og:image extraction)
+├── provider_ddg.go   — DDGImageProvider (DuckDuckGo direct)
+└── orchestrator.go   — FallbackProvider (sequential fallback)
 ```
 
 ## API Reference
@@ -214,7 +223,7 @@ type ClassificationEvent struct {
 type SearchOpts struct {
     PageNumber int           // SearXNG page number (default: 1)
     Engines    []string      // SearXNG engines (default: all)
-    Timeout    time.Duration // search timeout (default: 15s)
+    Timeout    time.Duration // search timeout (default: 30s)
 }
 ```
 
@@ -222,13 +231,15 @@ type SearchOpts struct {
 
 | Method | Description |
 |--------|-------------|
+| `FindImages(ctx, FindOpts)` | **Unified entry point:** search + OG + external candidates → filter pipeline — returns `[]ImageCandidate` |
 | `SearchImages(ctx, query, maxResults)` | Search, filter, validate, dedup, assess license, classify — returns `[]ImageCandidate` |
 | `SearchImagesWithOpts(ctx, query, maxResults, opts)` | Same with pagination, engine selection, custom timeout |
 | `ClassifyImageFull(ctx, imageURL)` | Classify image via LLM — returns `ClassificationResult` with class + confidence |
 | `ClassifyImage(ctx, imageURL)` | Classify image — returns class string (`"PHOTO"`, `"STOCK"`, etc.) |
 | `IsRealPhoto(ctx, imageURL)` | Returns `true` if class is `"PHOTO"` or `""` (graceful degradation) |
 | `AssessLicense(cand, meta)` | Composite license verdict combining domain, metadata, and CC signals — returns `LicenseAssessment` |
-| `ValidateImageURL(ctx, rawURL)` | Check HTTP status, content type, and minimum width |
+| `ValidateImageURL(ctx, rawURL)` | Check HTTP status, content type, and minimum width (proxy-aware) |
+| `ValidateCandidates(ctx, candidates, max)` | Run external candidates through full filter pipeline |
 | `Download(ctx, url, opts)` | Download image bytes with stealth fallback |
 
 ### Standalone Functions
@@ -254,8 +265,13 @@ type SearchOpts struct {
 
 | Provider | Source | License | API Key |
 |----------|--------|---------|---------|
-| `SearXNGProvider` | Self-hosted SearXNG meta-search | Mixed (depends on engine) | No |
+| `OxBrowserProvider` | ox-browser Rust service (Bing+DDG+Yandex with CF bypass) | Mixed | No |
 | `OpenverseProvider` | WordPress Openverse (842M+ images) | CC / Public Domain only | No |
+| `PexelsProvider` | Pexels stock photos | Pexels License (free) | Yes (`PEXELS_API_KEY`) |
+| `OGImageProvider` | Extracts og:image from source page HTML | Unknown | No |
+| `DDGImageProvider` | DuckDuckGo direct (fallback) | Mixed | No |
+| `SearXNGProvider` | Self-hosted SearXNG meta-search (legacy) | Mixed | No |
+| `FallbackProvider` | Orchestrator: tries providers in order | — | — |
 
 Custom providers implement the `SearchProvider` interface.
 

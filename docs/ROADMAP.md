@@ -34,7 +34,7 @@
 - [x] **SearXNG pagination** — `SearchOpts.PageNumber` parameter, `&pageno=N` in requests.
 - [x] **Openverse as search backend** — `OpenverseProvider` queries 842M+ CC/PD images. All results `LicenseSafe`.
 - [x] **SearchProvider interface** — pluggable backends via `SearchProvider` interface. Ships with `SearXNGProvider` and `OpenverseProvider`.
-- [x] **Configurable search timeout** — `SearchOpts.Timeout` overrides default 15s.
+- [x] **Configurable search timeout** — `SearchOpts.Timeout` overrides default 30s.
 - [ ] **Image relevance scoring** (title match, source authority, resolution) — deferred.
 - [x] **SearXNG engine selection** — `SearchOpts.Engines` controls which backends SearXNG queries.
 
@@ -59,7 +59,7 @@ add parallel provider execution and orchestration.
 - [x] **Parallel gatherCandidates** — replaced sequential provider loop with `sync.WaitGroup` + goroutine-per-provider.
 - [x] **FallbackProvider** — orchestrator that tries providers in order until one succeeds. 6 tests.
 - [x] **Connect PexelsProvider** — wired in go-wp imageadapter via `PEXELS_API_KEY` env var.
-- [x] **Preserve DDGImageProvider** as fallback — when ox-browser is unavailable, falls back to existing Go DDG provider.
+- [x] **DDGImageProvider** — available as fallback provider, but removed from go-wp's provider chain (ox-browser already searches DDG).
 
 **Architecture:**
 - ox-browser (Rust) handles all scraping: TLS fingerprint, anti-bot, proxy rotation, CF bypass, HTML/JSON parsing
@@ -67,10 +67,23 @@ add parallel provider execution and orchestration.
 - Clean separation: Rust scrapes, Go validates
 
 **Consumer changes (go-wp):**
-- `imageadapter/adapter.go` — switch primary provider to OxBrowserProvider, add Pexels
+- `imageadapter/adapter.go` — switch primary provider to OxBrowserProvider, add Pexels, add OGImageProvider
 - `media/upload.go` — fix `http.DefaultClient` → proxied stealth client
+- `media/resolve.go` — refactored to use `FindImages` unified entry point
+- `media/prepare_select.go` — refactored to use `FindImages` instead of 3-strategy approach
 
 **Depends on:** ox-browser Phase 4.6 (image search crate)
+
+## Phase 2.6 — Unified Gateway (done)
+
+**Goal:** Make go-imagefy the single gateway for all image acquisition. Every image — search results, OG images, WP media library — passes through the same filter pipeline.
+
+- [x] **FindImages unified entry point** — `find.go`: combines search providers + OG extraction + external candidates → single filter pipeline
+- [x] **OGImageProvider** — `provider_og.go`: `SearchProvider` that extracts og:image from page HTML
+- [x] **ValidateCandidates export** — public wrapper for external candidate validation
+- [x] **ValidateImageURL proxy fix** — uses `cfg.validationClient()` (StealthClient → HTTPClient), no more bare `http.Client{}`
+- [x] **Search timeout increase** — 15s → 30s, renamed `searxngTimeout` → `searchTimeout`
+- [x] **go-wp refactored** — `resolve.go` and `prepare_select.go` use `FindImages` instead of separate strategies
 
 ## Phase 3 — Image Processing
 

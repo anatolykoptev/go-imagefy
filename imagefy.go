@@ -59,7 +59,7 @@ type Config struct {
 }
 
 // SearchOpts configures image search behavior.
-// Zero values mean "use defaults": PageNumber 0 or 1 = page 1, empty Engines = all engines, zero Timeout = 15s.
+// Zero values mean "use defaults": PageNumber 0 or 1 = page 1, empty Engines = all engines, zero Timeout = 30s.
 type SearchOpts struct {
 	PageNumber int           // SearXNG page number (default: 1)
 	Engines    []string      // SearXNG engines to use (default: all)
