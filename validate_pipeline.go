@@ -46,6 +46,7 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 //  3. downloadForValidation — single download for dedup + metadata + LLM
 //  4. Perceptual dedup — reject visual duplicates (dHash)
 //  5. ExtractImageMetadata + AssessLicense — domain + metadata signals
+//  5.5. ReverseCheck — reverse image search for laundered stock (opt-in)
 //  6. LLM Vision classification — fallback for unknown license
 func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate, dedup *dedupFilter) {
 	defer func() {
@@ -76,6 +77,17 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 		return
 	}
 	if accepted {
+		return
+	}
+
+	// Step 5.5: Reverse image search — detect laundered stock photos.
+	reverseResult := cfg.ReverseCheck(ctx, cand.ImgURL)
+	if reverseResult.IsStock {
+		slog.Debug("imagefy: blocked by reverse stock check",
+			"url", cand.ImgURL,
+			"stock_domains", reverseResult.StockDomains,
+		)
+		cfg.emitClassification(cand.ImgURL, ClassStock, 0, "reverse_stock")
 		return
 	}
 
