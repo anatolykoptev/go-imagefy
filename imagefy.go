@@ -52,6 +52,11 @@ type Config struct {
 	// ExtraSafeDomains are additional free/CC domains to treat as safe.
 	ExtraSafeDomains []string
 
+	// OxBrowserURL is the base URL of the ox-browser service for reverse image search.
+	// When set, enables reverse stock detection in the validation pipeline.
+	// Example: "http://ox-browser:8901" or "http://127.0.0.1:8901".
+	OxBrowserURL string
+
 	// Optional callbacks for metrics/logging.
 	OnImageSearch    func()
 	OnPanic          func(tag string, r any)
