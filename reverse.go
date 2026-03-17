@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
 	reverseMaxResults = 10
 	reverseBodyLimit  = 512 * 1024 // 512KB
+	reverseTimeout    = 10         // seconds
 )
 
 // ReverseResult holds the outcome of a reverse image search check.
@@ -53,6 +55,10 @@ func (cfg *Config) ReverseCheck(ctx context.Context, imageURL string) ReverseRes
 	if err != nil {
 		return ReverseResult{}
 	}
+
+	// Enforce timeout to prevent blocking pipeline goroutines when ox-browser is slow/down.
+	ctx, cancel := context.WithTimeout(ctx, reverseTimeout*time.Second)
+	defer cancel()
 
 	endpoint := strings.TrimRight(cfg.OxBrowserURL, "/") + "/images/reverse"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
