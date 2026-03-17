@@ -128,7 +128,7 @@ Key library: [`bep/imagemeta`](https://github.com/bep/imagemeta) (pure Go, EXIF+
 
 - [ ] **C2PA Content Credentials** — read C2PA manifests (ISO standard, v2.3) to verify image provenance. Adopted by Adobe, Google, Microsoft, BBC, Meta, Sony, Nikon, Leica. Can verify real photographs, detect AI-generated images, and identify source agencies. **No Go SDK exists** — would require CGO bindings to [`c2pa-c`](https://github.com/contentauth/c2pa-c) or a pure Go parser. First-mover advantage in Go ecosystem.
 - [ ] **AI-generated image detection** — combine C2PA credentials + IPTC 2025.1 AI fields + Sightengine-style heuristics. Increasingly important as AI-generated stock proliferates.
-- [ ] **Reverse image search** for provenance verification
+- [x] **Reverse image search** — pipeline step 5.5: calls ox-browser `POST /images/reverse` (Yandex + Google Lens) for `LicenseUnknown` candidates. If `is_stock=true` → `LicenseBlocked` without LLM call. Opt-in via `Config.OxBrowserURL`. Catches laundered stock photos with stripped metadata.
 
 ## Ideas (unscheduled)
 
