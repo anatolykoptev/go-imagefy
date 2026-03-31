@@ -1,0 +1,24 @@
+# github.com/bep/imagemeta v0.17.0
+## explicit; go 1.25
+github.com/bep/imagemeta
+# github.com/corona10/goimagehash v1.1.0
+## explicit
+github.com/corona10/goimagehash
+github.com/corona10/goimagehash/etcs
+github.com/corona10/goimagehash/transforms
+# github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646
+## explicit
+github.com/nfnt/resize
+# golang.org/x/image v0.36.0
+## explicit; go 1.24.0
+golang.org/x/image/riff
+golang.org/x/image/vp8
+golang.org/x/image/vp8l
+golang.org/x/image/webp
+# golang.org/x/text v0.34.0
+## explicit; go 1.24.0
+golang.org/x/text/encoding
+golang.org/x/text/encoding/charmap
+golang.org/x/text/encoding/internal
+golang.org/x/text/encoding/internal/identifier
+golang.org/x/text/transform
