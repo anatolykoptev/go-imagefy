@@ -65,17 +65,14 @@ func (cfg *Config) ValidateImageURL(ctx context.Context, rawURL string) bool {
 	return true
 }
 
-// validationClient returns an HTTP client that respects cfg.StealthClient / cfg.HTTPClient
-// while enforcing a redirect limit and timeout suitable for image validation.
+// validationClient returns an HTTP client for image URL validation.
+// Uses plain HTTPClient (fast, no proxy overhead). StealthClient is used
+// only by Download() as a fallback when HTTPClient gets blocked.
 func (cfg *Config) validationClient() *http.Client {
-	base := cfg.HTTPClient
-	if cfg.StealthClient != nil {
-		base = cfg.StealthClient
-	}
 	return &http.Client{
-		Transport: base.Transport,
+		Transport: cfg.HTTPClient.Transport,
 		Timeout:   defaultTimeout,
-		Jar:       base.Jar,
+		Jar:       cfg.HTTPClient.Jar,
 		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
 			const maxRedirects = 3
 			if len(via) >= maxRedirects {

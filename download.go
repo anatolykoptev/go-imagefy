@@ -17,7 +17,7 @@ type DownloadOpts struct {
 }
 
 const (
-	defaultMaxBytes = 200 * 1024       // 200KB
+	defaultMaxBytes = 200 * 1024 // 200KB
 	defaultTimeout  = 10 * time.Second
 )
 
@@ -27,8 +27,9 @@ type DownloadResult struct {
 	MIMEType string
 }
 
-// Download fetches an image from url. Tries cfg.StealthClient first (if set),
-// falls back to cfg.HTTPClient.
+// Download fetches an image from url. Tries HTTPClient first (fast, no proxy),
+// falls back to StealthClient (proxy with TLS fingerprint) for CDNs that block
+// direct requests (e.g. Tilda, Mamado).
 // Returns nil result (not error) on recoverable failures (404, non-image, etc.)
 // for graceful degradation.
 func (cfg *Config) Download(ctx context.Context, url string, opts DownloadOpts) (*DownloadResult, error) {
@@ -45,16 +46,19 @@ func (cfg *Config) Download(ctx context.Context, url string, opts DownloadOpts) 
 		ua = cfg.UserAgent
 	}
 
-	// Try stealth client first.
+	// Try direct HTTP first (fast).
+	if r := fetchImageData(ctx, cfg.HTTPClient, url, ua, opts); r != nil {
+		return r, nil
+	}
+
+	// Fallback to stealth client (proxy + TLS fingerprint) for blocked CDNs.
 	if cfg.StealthClient != nil {
 		if r := fetchImageData(ctx, cfg.StealthClient, url, ua, opts); r != nil {
 			return r, nil
 		}
 	}
 
-	// Fallback to regular client.
-	r := fetchImageData(ctx, cfg.HTTPClient, url, ua, opts)
-	return r, nil
+	return nil, nil
 }
 
 func fetchImageData(ctx context.Context, client *http.Client, imageURL, ua string, opts DownloadOpts) *DownloadResult {

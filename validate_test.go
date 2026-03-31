@@ -121,7 +121,7 @@ func TestValidateImageURL_UsesConfigHTTPClient(t *testing.T) {
 	}
 }
 
-func TestValidateImageURL_PrefersStealthClient(t *testing.T) {
+func TestValidateImageURL_PrefersHTTPClient(t *testing.T) {
 	httpCalled := false
 	stealthCalled := false
 	body := makeJPEG(1000, 600)
@@ -150,11 +150,11 @@ func TestValidateImageURL_PrefersStealthClient(t *testing.T) {
 	}
 
 	cfg.ValidateImageURL(context.Background(), "http://example.com/photo.jpg")
-	if httpCalled {
-		t.Error("expected HTTPClient transport NOT to be used when StealthClient is set")
+	if !httpCalled {
+		t.Fatal("expected HTTPClient to be used for validation (fast, no proxy)")
 	}
-	if !stealthCalled {
-		t.Fatal("expected StealthClient transport to be used, but it was not called")
+	if stealthCalled {
+		t.Error("StealthClient should not be used for validation — only for download fallback")
 	}
 }
 
