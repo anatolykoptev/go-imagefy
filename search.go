@@ -17,6 +17,9 @@ type ImageCandidate struct {
 	Source    string       // page URL
 	Title     string       // image/page title
 	License   ImageLicense // license classification
+	Width     int          // image width (0 if unknown)
+	Height    int          // image height (0 if unknown)
+	Engine    string       // search engine name
 }
 
 // SearchImages queries configured search providers for images and returns up to maxResults validated candidates.
