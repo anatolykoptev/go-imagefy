@@ -24,7 +24,7 @@ var ruStopWords = map[string]bool{
 
 var enStopWords = map[string]bool{
 	"the": true, "and": true, "for": true, "with": true, "best": true,
-	"top": true, "great": true, "good": true, "new": true, "your": true,
+	"top": true, "good": true, "your": true,
 	"you": true, "this": true, "that": true, "these": true, "those": true,
 	"from": true, "into": true, "about": true, "over": true, "under": true,
 	"some": true, "any": true, "all": true, "more": true, "most": true,
@@ -41,8 +41,13 @@ func BuildImageQuery(title, city string) string {
 // using the appropriate stop-word list for the given language. For unknown langs
 // the RU list is used (safe default).
 func BuildImageQueryLang(title, city, lang string) string {
+	// Normalize lang: lowercase + strip BCP-47 region tag ("en-US" → "en").
 	stopWords := ruStopWords
-	if lang == "en" {
+	primary := strings.ToLower(lang)
+	if idx := strings.Index(primary, "-"); idx > 0 {
+		primary = primary[:idx]
+	}
+	if primary == "en" {
 		stopWords = enStopWords
 	}
 	words := strings.Fields(title)
