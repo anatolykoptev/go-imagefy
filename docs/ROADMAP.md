@@ -139,3 +139,38 @@ Key library: [`bep/imagemeta`](https://github.com/bep/imagemeta) (pure Go, EXIF+
 - **MCP server wrapper** for direct integration with AI agents
 - **Dedicated watermark model** — train via Clarifai or similar on stock watermark dataset, serve via ONNX. Cheaper and faster than LLM for STOCK detection specifically
 - **Direct stock photo API clients** — thin Pexels/Pixabay wrappers (~100 lines each) for guaranteed license-clean results
+
+---
+
+## Content Automation Track (NEW, 2026-04-23)
+
+Cross-cutting from [~/docs/content-automation/ROADMAP.md](/home/krolik/docs/content-automation/ROADMAP.md).
+
+**Context**: go-imagefy finds and validates existing images. **Image generation не существует ни в одном репо.** Для piter.now + hully.day, где каждый пост нуждается в hero-image, это пробел — сегодня либо og:image источника, либо Unsplash/Pexels, либо ничего.
+
+### Phase 4 — `Generator` interface + ImagenProvider (2 weeks)
+
+- [ ] `generator.go` — `Generator` interface:
+  ```go
+  type Generator interface {
+      Name() string
+      Generate(ctx context.Context, prompt GenPrompt) (*Image, error)
+  }
+  type GenPrompt struct {
+      Prompt, NegativePrompt, Style string
+      Aspect string // "16:9"|"4:3"|"1:1"
+  }
+  ```
+- [ ] `imagen_provider.go` — `ImagenProvider` wraps new `imagen-svc` (:8912) via HTTP. Supports Gemini Imagen (primary via CLIProxyAPI OAuth pool) and Flux/SDXL fallback
+- [ ] `find.go` — `FindImages` new option `WithGeneratorFallback(Generator)`:
+  - If all SearchProviders return 0 candidates passing license+classify → call generator
+  - Quality threshold: если candidates < `min_confidence` → also fallback
+- [ ] Visual prompt builder: title + `StyleProfile.ImageStyle` → GenPrompt (LLM helper, cached)
+- [ ] Tests for `ImagenProvider` against mock imagen-svc
+- [ ] Fix 1 vuln dep, bump freshness ratio
+
+### Phase 5 — Quality score integration
+- [ ] `License` field on generated images = `"ai-generated"` с соответствующим disclosure в alt-text
+- [ ] C2PA metadata extraction от Imagen outputs (Gemini Imagen 3 is C2PA-aware) — mark as safe even though AI
+
+See: [~/docs/content-automation/phases/phase-4-imagen-consolidation.md](/home/krolik/docs/content-automation/phases/phase-4-imagen-consolidation.md)
