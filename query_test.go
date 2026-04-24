@@ -111,3 +111,38 @@ func TestBuildImageQuery(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildImageQueryLang_EN(t *testing.T) {
+	got := BuildImageQueryLang("best coffee shops in San Francisco", "San Francisco", "en")
+	if !strings.Contains(got, "coffee") || !strings.Contains(got, "shops") {
+		t.Errorf("got %q, want query containing coffee+shops", got)
+	}
+	if strings.Contains(strings.ToLower(got), "best") {
+		t.Errorf("got %q, should strip 'best'", got)
+	}
+}
+
+func TestBuildImageQueryLang_EN_StripsTop(t *testing.T) {
+	got := BuildImageQueryLang("top 10 restaurants Los Angeles", "Los Angeles", "en")
+	if strings.Contains(strings.ToLower(got), "top") {
+		t.Errorf("got %q, should strip 'top'", got)
+	}
+}
+
+func TestBuildImageQueryLang_RU_Backcompat(t *testing.T) {
+	// Legacy call path must produce identical output to explicit ru call.
+	got1 := BuildImageQuery("Лучшие кофейни в Санкт-Петербурге", "Санкт-Петербург")
+	got2 := BuildImageQueryLang("Лучшие кофейни в Санкт-Петербурге", "Санкт-Петербург", "ru")
+	if got1 != got2 {
+		t.Errorf("BuildImageQuery and BuildImageQueryLang(ru) differ: %q vs %q", got1, got2)
+	}
+}
+
+func TestBuildImageQueryLang_UnknownLang_FallsBackRU(t *testing.T) {
+	// Unknown lang should behave like ru (safe default).
+	got1 := BuildImageQueryLang("Лучшие кофейни", "СПб", "unknown")
+	got2 := BuildImageQueryLang("Лучшие кофейни", "СПб", "ru")
+	if got1 != got2 {
+		t.Errorf("unknown lang should fall back to ru, got %q vs %q", got1, got2)
+	}
+}

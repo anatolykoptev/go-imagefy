@@ -5,13 +5,11 @@ import (
 	"unicode/utf8"
 )
 
-// minWordRunes is the minimum rune count for a word to be kept in the query.
-const minWordRunes = 3
+const (
+	minWordRunes  = 3
+	maxQueryWords = 5
+)
 
-// maxQueryWords is the maximum number of meaningful words in the image query.
-const maxQueryWords = 5
-
-// ruStopWords are common Russian stop words to strip from image search queries.
 var ruStopWords = map[string]bool{
 	"в": true, "на": true, "и": true, "из": true, "для": true,
 	"что": true, "как": true, "это": true, "по": true, "от": true,
@@ -24,18 +22,38 @@ var ruStopWords = map[string]bool{
 	"при": true, "без": true, "над": true, "через": true,
 }
 
-// BuildImageQuery extracts 3-5 meaningful words from title for image search.
-// Strips Russian stop words and short words. Appends city if not already present.
+var enStopWords = map[string]bool{
+	"the": true, "and": true, "for": true, "with": true, "best": true,
+	"top": true, "great": true, "good": true, "new": true, "your": true,
+	"you": true, "this": true, "that": true, "these": true, "those": true,
+	"from": true, "into": true, "about": true, "over": true, "under": true,
+	"some": true, "any": true, "all": true, "more": true, "most": true,
+	"very": true, "really": true, "just": true, "only": true, "also": true,
+}
+
+// BuildImageQuery is the legacy entrypoint — defaults lang to "ru" for
+// backwards compatibility. New code should call BuildImageQueryLang.
 func BuildImageQuery(title, city string) string {
+	return BuildImageQueryLang(title, city, "ru")
+}
+
+// BuildImageQueryLang extracts 3-5 meaningful words from title for image search,
+// using the appropriate stop-word list for the given language. For unknown langs
+// the RU list is used (safe default).
+func BuildImageQueryLang(title, city, lang string) string {
+	stopWords := ruStopWords
+	if lang == "en" {
+		stopWords = enStopWords
+	}
 	words := strings.Fields(title)
-	var meaningful []string
+	meaningful := make([]string, 0, len(words))
 	for _, w := range words {
 		w = strings.Trim(w, ".,;:!?\"'()[]{}«»—–-")
 		if w == "" {
 			continue
 		}
 		lower := strings.ToLower(w)
-		if ruStopWords[lower] {
+		if stopWords[lower] {
 			continue
 		}
 		if utf8.RuneCountInString(w) < minWordRunes {
@@ -43,16 +61,12 @@ func BuildImageQuery(title, city string) string {
 		}
 		meaningful = append(meaningful, w)
 	}
-
 	if len(meaningful) > maxQueryWords {
 		meaningful = meaningful[:maxQueryWords]
 	}
-
 	query := strings.Join(meaningful, " ")
-
 	if city != "" && !strings.Contains(strings.ToLower(query), strings.ToLower(city)) {
 		query += " " + city
 	}
-
 	return query
 }
