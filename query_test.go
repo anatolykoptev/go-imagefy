@@ -111,3 +111,68 @@ func TestBuildImageQuery(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildImageQueryLang_EN(t *testing.T) {
+	t.Parallel()
+	got := BuildImageQueryLang("best coffee shops in San Francisco", "San Francisco", "en")
+	if !strings.Contains(got, "coffee") || !strings.Contains(got, "shops") {
+		t.Errorf("got %q, want query containing coffee+shops", got)
+	}
+	if strings.Contains(strings.ToLower(got), "best") {
+		t.Errorf("got %q, should strip 'best'", got)
+	}
+}
+
+func TestBuildImageQueryLang_EN_StripsTop(t *testing.T) {
+	t.Parallel()
+	got := BuildImageQueryLang("top 10 restaurants Los Angeles", "Los Angeles", "en")
+	if strings.Contains(strings.ToLower(got), "top") {
+		t.Errorf("got %q, should strip 'top'", got)
+	}
+}
+
+func TestBuildImageQueryLang_RU_Backcompat(t *testing.T) {
+	t.Parallel()
+	// Legacy call path must produce identical output to explicit ru call.
+	got1 := BuildImageQuery("Лучшие кофейни в Санкт-Петербурге", "Санкт-Петербург")
+	got2 := BuildImageQueryLang("Лучшие кофейни в Санкт-Петербурге", "Санкт-Петербург", "ru")
+	if got1 != got2 {
+		t.Errorf("BuildImageQuery and BuildImageQueryLang(ru) differ: %q vs %q", got1, got2)
+	}
+}
+
+func TestBuildImageQueryLang_UnknownLang_FallsBackRU(t *testing.T) {
+	t.Parallel()
+	// Unknown lang should behave like ru (safe default).
+	got1 := BuildImageQueryLang("Лучшие кофейни", "СПб", "unknown")
+	got2 := BuildImageQueryLang("Лучшие кофейни", "СПб", "ru")
+	if got1 != got2 {
+		t.Errorf("unknown lang should fall back to ru, got %q vs %q", got1, got2)
+	}
+}
+
+func TestBuildImageQueryLang_EN_KeepsProperNouns(t *testing.T) {
+	t.Parallel()
+	got := BuildImageQueryLang("coffee shops in New York", "New York", "en")
+	if !strings.Contains(got, "New") {
+		t.Errorf("got %q, should keep 'New' — 'New York' is a proper noun", got)
+	}
+}
+
+func TestBuildImageQueryLang_EN_UpperCaseLang(t *testing.T) {
+	t.Parallel()
+	got1 := BuildImageQueryLang("best coffee SF", "SF", "EN")
+	got2 := BuildImageQueryLang("best coffee SF", "SF", "en")
+	if got1 != got2 {
+		t.Errorf("uppercase 'EN' should match 'en': %q vs %q", got1, got2)
+	}
+}
+
+func TestBuildImageQueryLang_EN_LocaleTag(t *testing.T) {
+	t.Parallel()
+	got1 := BuildImageQueryLang("best coffee SF", "SF", "en-US")
+	got2 := BuildImageQueryLang("best coffee SF", "SF", "en")
+	if got1 != got2 {
+		t.Errorf("en-US should behave like en: %q vs %q", got1, got2)
+	}
+}
