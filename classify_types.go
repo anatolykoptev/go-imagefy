@@ -20,11 +20,18 @@ Categories:
 - SCREENSHOT — screenshot of a website, app, or software interface.
 - ILLUSTRATION — drawing, painting, digital art, cartoon, vector graphic.
 - MAP — map, satellite view, floor plan, diagram.
+- PLACEHOLDER — error page, "no permission" message, blank image with centered text,
+  site logo used as article image, or any image whose primary content is a text error
+  or permission-denial message (e.g. "This site does not have permission to access or
+  serve this content", "404", "Access Denied"). Uniform background with centered text
+  is a strong signal.
 
 Key distinctions:
 - Small corner watermark of photographer → PHOTO
 - Repeating diagonal stock watermark → STOCK
 - Text/graphics dominate the image → REJECT
+- Image is primarily an error message or permission denial → PLACEHOLDER
+- Site logo displayed as article thumbnail → PLACEHOLDER
 
 Answer format: CLASS 0.95
 Example: PHOTO 0.92
@@ -62,12 +69,16 @@ const (
 	ClassScreenshot   = "SCREENSHOT"
 	ClassIllustration = "ILLUSTRATION"
 	ClassMap          = "MAP"
+	// ClassPlaceholder is returned when the image is an error page, "no permission"
+	// message, blank image with centered text, or site logo used as article image.
+	// Treated as a hard reject in the validation pipeline.
+	ClassPlaceholder = "PLACEHOLDER"
 )
 
 // classificationClasses lists valid classification labels, ordered longest-first
 // to prevent prefix ambiguity during parsing (e.g. "SCREENSHOT" before "STOCK").
 var classificationClasses = []string{
-	ClassIllustration, ClassScreenshot, ClassReject, ClassPhoto, ClassStock, ClassMap,
+	ClassIllustration, ClassPlaceholder, ClassScreenshot, ClassReject, ClassPhoto, ClassStock, ClassMap,
 }
 
 // ClassificationEvent is emitted by the audit log callback for each classification decision.
@@ -80,7 +91,7 @@ type ClassificationEvent struct {
 
 // ClassificationResult holds the output of ClassifyImageFull.
 type ClassificationResult struct {
-	Class      string  // PHOTO, STOCK, REJECT, SCREENSHOT, ILLUSTRATION, MAP, or ""
+	Class      string  // PHOTO, STOCK, REJECT, SCREENSHOT, ILLUSTRATION, MAP, PLACEHOLDER, or ""
 	Confidence float64 // 0.0–1.0; 0 if not provided or out of range
 }
 
