@@ -18,10 +18,14 @@ const findDefaultMaxResults = 3
 
 // FindImages is the unified entry point for image acquisition. It:
 //  1. Queries configured search providers (if Query is set)
-//  2. Extracts og:image (if PageURL is set and no OGImageProvider in Providers)
+//  2. Extracts content images from PageURL (og:image, JSON-LD, <img> tags) if PageURL is set
+//     and no ContentImageProvider or OGImageProvider is already in Providers.
 //  3. Accepts external candidates (e.g. WP media library)
 //  4. Merges all, sorts by license (safe first)
 //  5. Runs the full filter pipeline (validate, dedup, metadata, LLM vision)
+//
+// Backward compat: when PageURL is set but ContentImageProvider finds only og:image,
+// the result is identical to the old OGImageProvider-only behaviour.
 func (cfg *Config) FindImages(ctx context.Context, opts FindOpts) []ImageCandidate {
 	maxResults := opts.MaxResults
 	if maxResults <= 0 {
@@ -42,11 +46,14 @@ func (cfg *Config) FindImages(ctx context.Context, opts FindOpts) []ImageCandida
 		candidates = append(candidates, cfg.gatherCandidates(ctx, providers, opts.Query, searchOpts)...)
 	}
 
-	// 2. OG image (if PageURL set and no OGImageProvider already in Providers).
-	if opts.PageURL != "" && !cfg.hasOGProvider() {
-		ogP := &OGImageProvider{HTTPClient: cfg.HTTPClient}
-		ogCandidates, _ := ogP.Search(ctx, "", SearchOpts{PageURL: opts.PageURL})
-		candidates = append(candidates, ogCandidates...)
+	// 2. Content image extraction (replaces bare OGImageProvider).
+	//    ContentImageProvider already includes og:image as a low-priority fallback,
+	//    so this covers both cases with a single HTTP fetch.
+	//    Skip if the caller has already wired a content or og provider explicitly.
+	if opts.PageURL != "" && !cfg.hasContentProvider() && !cfg.hasOGProvider() {
+		cp := &ContentImageProvider{HTTPClient: cfg.HTTPClient}
+		cpCandidates, _ := cp.Search(ctx, opts.Query, SearchOpts{PageURL: opts.PageURL})
+		candidates = append(candidates, cpCandidates...)
 	}
 
 	// 3. External candidates.
@@ -62,6 +69,16 @@ func (cfg *Config) FindImages(ctx context.Context, opts FindOpts) []ImageCandida
 	})
 
 	return cfg.validateCandidates(ctx, candidates, maxResults)
+}
+
+// hasContentProvider checks if a ContentImageProvider is already in the Providers list.
+func (cfg *Config) hasContentProvider() bool {
+	for _, p := range cfg.Providers {
+		if p.Name() == "content" {
+			return true
+		}
+	}
+	return false
 }
 
 // hasOGProvider checks if an OGImageProvider is already in the Providers list.
