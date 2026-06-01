@@ -3,14 +3,14 @@ module github.com/anatolykoptev/go-imagefy
 go 1.26
 
 require (
-	github.com/anatolykoptev/go-engine v1.25.0
+	github.com/anatolykoptev/go-engine v1.27.0
 	github.com/bep/imagemeta v0.17.0
 	github.com/corona10/goimagehash v1.1.0
 	golang.org/x/image v0.36.0
 )
 
 require (
-	github.com/anatolykoptev/go-stealth v1.13.0 // indirect
+	github.com/anatolykoptev/go-stealth v1.15.0 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/bdandy/go-errors v1.2.2 // indirect
 	github.com/bdandy/go-socks4 v1.2.3 // indirect
