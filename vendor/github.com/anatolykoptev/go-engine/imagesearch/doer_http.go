@@ -21,7 +21,7 @@ func NewHTTPDoer() *HTTPDoer {
 }
 
 func (d *HTTPDoer) Do(method, url string, headers map[string]string, body io.Reader) ([]byte, map[string]string, int, error) {
-	req, err := http.NewRequest(method, url, body)
+	req, err := http.NewRequest(method, url, body) //nolint:noctx // BrowserDoer interface carries no ctx (shared contract with websearch)
 	if err != nil {
 		return nil, nil, 0, err
 	}

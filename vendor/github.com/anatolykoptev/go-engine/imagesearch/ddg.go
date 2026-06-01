@@ -44,7 +44,7 @@ func (d *DdgImages) Search(ctx context.Context, doer BrowserDoer, query string, 
 
 	vqd := extractVQD(string(data))
 	if vqd == "" {
-		return nil, fmt.Errorf("ddg: vqd token not found")
+		return nil, fmt.Errorf("ddg: vqd token not found") //nolint:perfsprint // relocated verbatim from go-stealth/imagesearch
 	}
 
 	// Step 2: fetch image results.

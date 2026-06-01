@@ -4,12 +4,12 @@ import (
 	"context"
 	"strings"
 
-	"github.com/anatolykoptev/go-stealth/imagesearch"
+	"github.com/anatolykoptev/go-engine/imagesearch"
 )
 
 const nativeMaxResults = 10
 
-// NativeImageProvider searches images using go-stealth/imagesearch engines directly (in-process).
+// NativeImageProvider searches images using go-engine/imagesearch engines directly (in-process).
 type NativeImageProvider struct {
 	search *imagesearch.MultiSearch
 }
