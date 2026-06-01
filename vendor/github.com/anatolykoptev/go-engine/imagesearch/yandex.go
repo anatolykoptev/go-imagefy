@@ -35,10 +35,10 @@ func (y *YandexImages) Search(ctx context.Context, doer BrowserDoer, query strin
 	headers["accept-language"] = "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
 
 	data, respHeaders, status, err := doer.Do(http.MethodGet, u, headers, nil)
-	if err == nil && status == http.StatusOK {
+	if err == nil && status == http.StatusOK { //nolint:nestif // relocated verbatim from go-stealth/imagesearch
 		if respHeaders["x-yandex-captcha"] != "" {
 			if y.Renderer == nil {
-				return nil, fmt.Errorf("yandex: captcha detected, renderer not configured")
+				return nil, fmt.Errorf("yandex: captcha detected, renderer not configured") //nolint:perfsprint // relocated verbatim from go-stealth/imagesearch
 			}
 			// Fall through to Chrome renderer below.
 		} else if results := parseYandexDataState(string(data)); len(results) > 0 {
@@ -51,7 +51,7 @@ func (y *YandexImages) Search(ctx context.Context, doer BrowserDoer, query strin
 
 	// Fallback to Chrome render if available.
 	if y.Renderer == nil {
-		return nil, fmt.Errorf("yandex: no results from HTTP, renderer not configured")
+		return nil, fmt.Errorf("yandex: no results from HTTP, renderer not configured") //nolint:perfsprint // relocated verbatim from go-stealth/imagesearch
 	}
 	renderedHTML, err := y.Renderer.Render(ctx, u)
 	if err != nil {
@@ -110,7 +110,7 @@ type yandexThumb struct {
 
 // parseYandexDataState finds the data-state block containing initialState.serpList
 // and extracts image results from entities.
-func parseYandexDataState(pageHTML string) []ImageResult {
+func parseYandexDataState(pageHTML string) []ImageResult { //nolint:gocognit,cyclop // relocated verbatim; complex Yandex JSON/HTML parser, refactor deferred
 	matches := dataStateRe.FindAllStringSubmatch(pageHTML, -1)
 
 	for _, m := range matches {
@@ -122,7 +122,7 @@ func parseYandexDataState(pageHTML string) []ImageResult {
 		}
 
 		entities := state.InitialState.SerpList.Items.Entities
-		if len(entities) == 0 {
+		if len(entities) == 0 { //nolint:nestif // relocated verbatim from go-stealth/imagesearch
 			// Try viewerData.dups path (alternative Yandex response format).
 			var viewerState yandexViewerState
 			if err := json.Unmarshal([]byte(decoded), &viewerState); err == nil {
