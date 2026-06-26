@@ -1,4 +1,4 @@
-# github.com/anatolykoptev/go-engine v1.27.0
+# github.com/anatolykoptev/go-engine v1.42.0
 ## explicit; go 1.26
 github.com/anatolykoptev/go-engine/imagesearch
 # github.com/anatolykoptev/go-stealth v1.15.0
