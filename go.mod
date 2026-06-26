@@ -3,7 +3,7 @@ module github.com/anatolykoptev/go-imagefy
 go 1.26
 
 require (
-	github.com/anatolykoptev/go-engine v1.27.0
+	github.com/anatolykoptev/go-engine v1.42.0
 	github.com/bep/imagemeta v0.17.0
 	github.com/corona10/goimagehash v1.1.0
 	golang.org/x/image v0.36.0
