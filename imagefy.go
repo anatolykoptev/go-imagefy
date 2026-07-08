@@ -52,6 +52,13 @@ type Config struct {
 	// ExtraSafeDomains are additional free/CC domains to treat as safe.
 	ExtraSafeDomains []string
 
+	// PlaceholderHashes are additional known-placeholder dHash values
+	// (goimagehash.DHash, 64-bit — see placeholder.go) merged with go-imagefy's
+	// embedded default blocklist. Lets an operator block a newly-discovered
+	// hotlink-protection / "image unavailable" placeholder without a
+	// go-imagefy release.
+	PlaceholderHashes []uint64
+
 	// OxBrowserURL is the base URL of the ox-browser service for reverse image search.
 	// When set, enables reverse stock detection in the validation pipeline.
 	// Example: "http://ox-browser:8901" or "http://127.0.0.1:8901".

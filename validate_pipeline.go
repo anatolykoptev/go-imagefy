@@ -13,6 +13,7 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 	var mu sync.Mutex
 	var validated []ImageCandidate
 	dedup := &dedupFilter{}
+	placeholders := newPlaceholderMatcher(cfg.PlaceholderHashes)
 
 	var wg sync.WaitGroup
 	for _, c := range toValidate {
@@ -29,7 +30,7 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			cfg.validateOne(ctx, cand, maxResults, &mu, &validated, dedup)
+			cfg.validateOne(ctx, cand, maxResults, &mu, &validated, dedup, placeholders)
 		}(c)
 	}
 	wg.Wait()
@@ -45,10 +46,11 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 //  2. Extra domain pre-check — skip download for known-blocked domains
 //  3. downloadForValidation — single download for dedup + metadata + LLM
 //  4. Perceptual dedup — reject visual duplicates (dHash)
+//  4.5. Placeholder blocklist — reject known hotlink-protection / "image unavailable" graphics (dHash)
 //  5. ExtractImageMetadata + AssessLicense — domain + metadata signals
 //  5.5. ReverseCheck — reverse image search for laundered stock (opt-in)
 //  6. LLM Vision classification — fallback for unknown license
-func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate, dedup *dedupFilter) {
+func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate, dedup *dedupFilter, placeholders *placeholderMatcher) {
 	defer func() {
 		if r := recover(); r != nil {
 			if cfg.OnPanic != nil {
@@ -70,6 +72,14 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 	if img != nil && dedup.isDuplicate(img) {
 		slog.Debug("imagefy: dedup rejected", "url", cand.ImgURL)
 		return
+	}
+
+	if img != nil {
+		if matched, source := placeholders.matches(img); matched {
+			slog.Debug("imagefy: placeholder rejected", "url", cand.ImgURL, "source", source)
+			cfg.emitClassification(cand.ImgURL, ClassPlaceholder, 1.0, "phash_blocklist")
+			return
+		}
 	}
 
 	accepted, done := cfg.assessAndAccept(ctx, cand, data, maxResults, mu, validated)
