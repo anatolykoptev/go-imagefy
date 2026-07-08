@@ -76,6 +76,22 @@ type Config struct {
 	// default: DefaultFlatImageMaxEntropyBits (1.5). <= 0 means "use default".
 	FlatImageMaxEntropyBits float64
 
+	// FlatImageMaxGradientEnergy is the maximum mean pixel-to-pixel luma
+	// difference (8-bit-equivalent units) between adjacent sampled pixels
+	// allowed for the flat/non-photographic reject gate to fire. This is the
+	// palette-independent discriminator: it's what separates a dead-flat
+	// placeholder from a legitimately low-contrast real photo (overcast
+	// snow, fog, night sky, high-key studio) that would otherwise also
+	// collapse the three palette signals above.
+	// default: DefaultFlatImageMaxGradientEnergy (1.2). <= 0 means "use default".
+	FlatImageMaxGradientEnergy float64
+
+	// DisableFlatImageDetection turns off the flat/non-photographic reject
+	// gate (flatimage.go) entirely. The gate is always-on by default (zero
+	// value = false = enabled) — set true to kill it in production without a
+	// redeploy, e.g. if a false-positive class is discovered live.
+	DisableFlatImageDetection bool
+
 	// OxBrowserURL is the base URL of the ox-browser service for reverse image search.
 	// When set, enables reverse stock detection in the validation pipeline.
 	// Example: "http://ox-browser:8901" or "http://127.0.0.1:8901".
@@ -116,5 +132,8 @@ func (c *Config) defaults() { //nolint:unused // called by Layer 1/2 methods add
 	}
 	if c.FlatImageMaxEntropyBits <= 0 {
 		c.FlatImageMaxEntropyBits = DefaultFlatImageMaxEntropyBits
+	}
+	if c.FlatImageMaxGradientEnergy <= 0 {
+		c.FlatImageMaxGradientEnergy = DefaultFlatImageMaxGradientEnergy
 	}
 }

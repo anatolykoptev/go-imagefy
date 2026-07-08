@@ -140,15 +140,18 @@ func (cfg *Config) rejectedByHash(img image.Image, url string, dedup *dedupFilte
 }
 
 // rejectedByFlatness rejects img if its pixel palette is flat / near-solid-color
-// / tiny — a content-agnostic signal for an UNKNOWN placeholder or blank image
-// that the phash blocklist (rejectedByHash) can't catch because it only knows
-// seeded hashes. See flatimage.go for the three-signal AND verdict + rationale.
+// / tiny AND it lacks real pixel-to-pixel micro-texture — a content-agnostic
+// signal for an UNKNOWN placeholder or blank image that the phash blocklist
+// (rejectedByHash) can't catch because it only knows seeded hashes. See
+// flatimage.go for the full four-signal verdict + rationale (why palette
+// alone false-rejects legitimate low-contrast photos).
 //
 // Graceful degradation: a nil img (decode failed) never false-rejects — same
 // contract as rejectedByHash — let downstream checks (license assessment,
-// reverse-stock, vision classification) decide instead.
+// reverse-stock, vision classification) decide instead. cfg.DisableFlatImageDetection
+// is an operator kill switch for this gate specifically.
 func (cfg *Config) rejectedByFlatness(img image.Image, url string) bool {
-	if img == nil {
+	if img == nil || cfg.DisableFlatImageDetection {
 		return false
 	}
 	rejected, reason := isNonPhotographic(img, cfg.flatThresholds())
