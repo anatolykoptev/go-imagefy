@@ -48,6 +48,20 @@ func (cfg *Config) ScreenImage(img image.Image, sourceURL string) (reject bool, 
 // one-call entry a consumer resolving a single caller-supplied image URL
 // (rather than running the internal search-candidate pipeline) should use.
 //
+// SSRF: url is fetched server-side with NO host filtering — no private/
+// link-local/cloud-metadata blocklist, no scheme allowlist. Unlike the
+// search pipeline (which gates every candidate through ValidateImageURL +
+// isBlockedByExtraDomains before this same download path runs), a direct
+// ScreenImageURL call goes straight to the fetch. This matches this
+// package's existing "URL is caller-supplied by design — SSRF is caller's
+// responsibility" posture (see the //nolint:gosec G704 annotations in
+// download.go and validate.go), but here the contract is otherwise invisible
+// on the API surface: the CALLER MUST validate url's host before calling —
+// deny non-http(s) schemes, and block private/link-local CIDRs
+// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, ::1, fc00::/7,
+// fe80::/10) plus the cloud-metadata address 169.254.169.254 — before this
+// method performs its unguarded server-side fetch.
+//
 // Graceful degradation: a download or decode failure fails OPEN
 // (reject=false, class="", reason="") with a descriptive error returned for
 // the caller to log — matching the rest of this package's posture of never

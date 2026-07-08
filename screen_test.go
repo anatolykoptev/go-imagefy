@@ -83,6 +83,36 @@ func TestScreenImage_AcceptsRealPhotos(t *testing.T) {
 	}
 }
 
+// TestScreenImage_DoesNotDedup proves ScreenImage carries no cross-call
+// state: calling it twice with the SAME (byte-identical) real photo must
+// accept BOTH times. This is the property that distinguishes it from the
+// search pipeline's validateOne, which rejects a second perceptually
+// identical candidate via dedupFilter (a NEW dedupFilter per
+// validateCandidates call — ScreenImage has no such filter at all, since a
+// single-image caller has no "other candidates in this search" to dedup
+// against).
+func TestScreenImage_DoesNotDedup(t *testing.T) {
+	t.Parallel()
+
+	corpus := loadFPGuardCorpus(t)
+	photo := corpus["building.jpg"]
+	if photo == nil {
+		t.Fatal("testdata/fp_guard/building.jpg not found in corpus")
+	}
+
+	cfg := &Config{}
+
+	reject1, class1, reason1 := cfg.ScreenImage(photo, "https://example.com/building.jpg")
+	if reject1 {
+		t.Fatalf("first call rejected: class=%q reason=%q, want accepted", class1, reason1)
+	}
+
+	reject2, class2, reason2 := cfg.ScreenImage(photo, "https://example.com/building.jpg")
+	if reject2 {
+		t.Errorf("second call with the SAME image was rejected (ScreenImage is dedup-ing across calls): class=%q reason=%q, want accepted", class2, reason2)
+	}
+}
+
 // TestScreenImage_NilImageFailsOpen proves the graceful-degradation contract:
 // a nil image (e.g. an upstream decode failure) never rejects.
 func TestScreenImage_NilImageFailsOpen(t *testing.T) {
