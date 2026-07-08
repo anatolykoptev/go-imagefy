@@ -2,8 +2,11 @@ package imagefy
 
 import (
 	"context"
+	"image"
 	"log/slog"
 	"sync"
+
+	"github.com/corona10/goimagehash"
 )
 
 const validationSemaphore = 3
@@ -13,6 +16,7 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 	var mu sync.Mutex
 	var validated []ImageCandidate
 	dedup := &dedupFilter{}
+	placeholders := newPlaceholderMatcher(cfg.PlaceholderHashes)
 
 	var wg sync.WaitGroup
 	for _, c := range toValidate {
@@ -29,7 +33,7 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			cfg.validateOne(ctx, cand, maxResults, &mu, &validated, dedup)
+			cfg.validateOne(ctx, cand, maxResults, &mu, &validated, dedup, placeholders)
 		}(c)
 	}
 	wg.Wait()
@@ -44,11 +48,11 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 //  1. ValidateImageURL — HTTP probe (dimensions, content-type, logo/banner check)
 //  2. Extra domain pre-check — skip download for known-blocked domains
 //  3. downloadForValidation — single download for dedup + metadata + LLM
-//  4. Perceptual dedup — reject visual duplicates (dHash)
+//  4. rejectedByHash — perceptual dedup + placeholder blocklist, one shared dHash (see rejectedByHash)
 //  5. ExtractImageMetadata + AssessLicense — domain + metadata signals
-//  5.5. ReverseCheck — reverse image search for laundered stock (opt-in)
-//  6. LLM Vision classification — fallback for unknown license
-func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate, dedup *dedupFilter) {
+//  6. ReverseCheck — reverse image search for laundered stock (opt-in)
+//  7. LLM Vision classification — fallback for unknown license
+func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate, dedup *dedupFilter, placeholders *placeholderMatcher) {
 	defer func() {
 		if r := recover(); r != nil {
 			if cfg.OnPanic != nil {
@@ -67,8 +71,7 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 
 	data, mimeType, img := cfg.downloadForValidation(ctx, cand.ImgURL)
 
-	if img != nil && dedup.isDuplicate(img) {
-		slog.Debug("imagefy: dedup rejected", "url", cand.ImgURL)
+	if cfg.rejectedByHash(img, cand.ImgURL, dedup, placeholders) {
 		return
 	}
 
@@ -80,7 +83,7 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 		return
 	}
 
-	// Step 5.5: Reverse image search — detect laundered stock photos.
+	// Step 6: Reverse image search — detect laundered stock photos.
 	reverseResult := cfg.ReverseCheck(ctx, cand.ImgURL)
 	if reverseResult.IsStock {
 		slog.Debug("imagefy: blocked by reverse stock check",
@@ -98,6 +101,37 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 		return
 	}
 	appendValidated(mu, validated, cand, maxResults)
+}
+
+// rejectedByHash runs the two dHash-based reject checks — perceptual dedup,
+// then the placeholder blocklist — against img, computing the dHash once and
+// sharing it between both (avoids hashing the same decoded image twice).
+//
+// Graceful degradation: a nil img (decode failed) or a hashing failure skips
+// both checks and returns false — never false-reject on error, let
+// downstream checks (license assessment, reverse-stock, vision
+// classification) decide instead.
+func (cfg *Config) rejectedByHash(img image.Image, url string, dedup *dedupFilter, placeholders *placeholderMatcher) bool {
+	if img == nil {
+		return false
+	}
+	hash, err := goimagehash.DifferenceHash(img)
+	if err != nil {
+		return false
+	}
+
+	if dedup.isDuplicateHash(hash) {
+		slog.Debug("imagefy: dedup rejected", "url", url)
+		return true
+	}
+
+	if matched, source := placeholders.matchesHash(hash); matched {
+		slog.Debug("imagefy: placeholder rejected", "url", url, "source", source)
+		cfg.emitClassification(url, ClassPlaceholder, 1.0, "phash_blocklist")
+		return true
+	}
+
+	return false
 }
 
 // isBlockedByExtraDomains checks extra blocked domains before downloading.

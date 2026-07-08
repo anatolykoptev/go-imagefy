@@ -33,7 +33,13 @@ func (d *dedupFilter) isDuplicate(img image.Image) bool {
 		// Graceful degradation: unable to hash → accept the image.
 		return false
 	}
+	return d.isDuplicateHash(hash)
+}
 
+// isDuplicateHash is the isDuplicate variant for a precomputed hash, so a
+// caller that already needs the image's dHash for another check (e.g. the
+// placeholder blocklist) doesn't hash the same decoded image twice.
+func (d *dedupFilter) isDuplicateHash(hash *goimagehash.ImageHash) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 

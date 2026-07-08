@@ -5,6 +5,8 @@ import (
 	"image/color"
 	"sync"
 	"testing"
+
+	"github.com/corona10/goimagehash"
 )
 
 // makeGradientImage creates an image with a horizontal gradient from black to white.
@@ -157,5 +159,27 @@ func TestDedupFilter_FreshFilterPerSearch(t *testing.T) {
 	d2 := &dedupFilter{}
 	if d2.isDuplicate(img) {
 		t.Fatal("d2: fresh filter should not inherit previous filter's hashes")
+	}
+}
+
+// TestDedupFilter_IsDuplicateHashMatchesIsDuplicate proves the precomputed-hash
+// entry point (isDuplicateHash) used by validateOne to share a single dHash
+// computation with the placeholder blocklist behaves identically to the
+// image-based isDuplicate.
+func TestDedupFilter_IsDuplicateHashMatchesIsDuplicate(t *testing.T) {
+	t.Parallel()
+
+	img := makeGradientImage(100, 100, 0)
+	hash, err := goimagehash.DifferenceHash(img)
+	if err != nil {
+		t.Fatalf("DifferenceHash: %v", err)
+	}
+
+	d := &dedupFilter{}
+	if d.isDuplicateHash(hash) {
+		t.Fatal("first call via isDuplicateHash should not be a duplicate")
+	}
+	if !d.isDuplicateHash(hash) {
+		t.Fatal("second call with the identical precomputed hash should be detected as duplicate")
 	}
 }
