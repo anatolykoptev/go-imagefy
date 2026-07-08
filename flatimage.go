@@ -29,6 +29,21 @@ import (
 // so adjacent pixels differ slightly; a solid/placeholder fill is dead-flat
 // pixel-to-pixel. Reject requires the palette collapse AND near-zero
 // gradient energy — see isNonPhotographic for the full verdict.
+//
+// At the SHIPPED default palette thresholds (dominantFraction>=0.85), no
+// un-doctored real photo fixture found — including snow/fog/night-sky/
+// high-key studio shots — actually collapses the palette (closest: a
+// high-key portrait at ~0.81); the palette gate alone already accepts every
+// real photo tested. gradientEnergy is therefore INSURANCE at defaults —
+// against an unseeded flat placeholder that happens to sit near the palette
+// boundary, and against a future operator retune that tightens
+// dominantFraction — not an active "rescues today's low-contrast photos"
+// mechanism (there's nothing to rescue them from at today's thresholds). It
+// becomes load-bearing specifically in the intersection a review flagged:
+// an image that is BOTH near-monochrome AND denoised/heavily-recompressed —
+// see the epsilon derivation below and TestIsNonPhotographic_
+// GradientSignalIsLoadBearing for a real (cropped-to-background,
+// denoised) fixture that actually reaches palette collapse.
 const (
 	// DefaultFlatImageDominantFraction is the minimum share of sampled pixels
 	// that must fall in a single coarse color bucket for the dominant-fraction
@@ -48,13 +63,33 @@ const (
 
 	// DefaultFlatImageMaxGradientEnergy is the maximum mean pixel-to-pixel
 	// luma difference (8-bit-equivalent units, adjacent sampled pixels)
-	// allowed for the gradient-energy signal to fire. Tuned against real
-	// low-contrast photo fixtures (testdata/fp_guard/{snow,night_sky,fog,
-	// high_key}.jpg) — see flatimage_test.go for measured margins. Synthetic
-	// solid/near-solid images (even JPEG-recompressed) sit at 0.0-0.0025;
-	// the flattest real photo found (night_sky.jpg, a long-exposure dark-sky
-	// shot) sits at 0.72 — clean separation with margin on both sides.
-	DefaultFlatImageMaxGradientEnergy = 0.5
+	// allowed for the gradient-energy signal to fire. Tuned against the
+	// INTERSECTION risk (a real photo that is BOTH near-monochrome AND
+	// denoised/heavily-recompressed — sensor-noise micro-texture is exactly
+	// what denoising destroys), not against un-doctored real photos: those
+	// never even reach the palette-collapse gate at default thresholds (see
+	// the package doc comment above).
+	//
+	// Measured (see flatimage_test.go and testdata/fp_guard/high_key_denoised.jpg,
+	// a real photo cropped to its near-monochrome background region then
+	// denoised — blur + quality-45 JPEG recompression, a realistic "went
+	// through a lossy pipeline" scenario, not a synthetic gradient):
+	//   - synthetic solid/near-solid images (even JPEG-recompressed): 0.0-0.0025
+	//   - the same real crop, natural JPEG only (no extra denoise):        0.0905
+	//   - the same real crop, light denoise (blur/median, quality 55-60):  0.046-0.054
+	//   - the same real crop, moderate denoise (blur 0x2.5, quality 45)
+	//     — the shipped fp_guard fixture, the realistic worst case found:  0.0351
+	// 0.02 sits ~8x above the synthetic ceiling and with a ~43% relative
+	// margin below the realistic denoised-real floor. An adversarially
+	// destructive downsample (crop to 20px then upscale) can still push a
+	// real image's gradient energy near the synthetic ceiling (~0.003) —
+	// that residual risk is accepted deliberately: this gate's stated bias
+	// is false-negatives (a missed unseeded placeholder falls through to
+	// license/vision checks) over false-positives (a rejected real photo at
+	// confidence 1.0 has no downstream rescue). Raising epsilon to close
+	// that residual gap would reject the realistic denoised-real fixture
+	// above instead.
+	DefaultFlatImageMaxGradientEnergy = 0.02
 
 	// flatSampleCap bounds the number of pixels sampled per image, keeping
 	// the detector's cost roughly constant regardless of image resolution.
@@ -92,10 +127,12 @@ type flatThresholds struct {
 // prior cfg.defaults() call: validateCandidates (the entry point that
 // actually calls isNonPhotographic) never calls cfg.defaults() itself, so a
 // caller that reaches it directly — as this package's own tests do — would
-// otherwise get zero-valued thresholds and the gate would silently fail-open
-// (reject nothing, since dominantFraction>=0 and 0<=0 trivially hold for a
-// truly empty threshold... worse, an all-zero maxEntropyBits/maxUniqueBuckets
-// would reject far too aggressively). Self-defaulting makes this robust
+// otherwise get an all-zero flatThresholds{}. That zero value is NOT a safe
+// no-op: maxUniqueBuckets=0 can never be satisfied (a decoded image always
+// has at least one non-empty color bucket, so uniqueBuckets<=0 is always
+// false), which makes the palette-collapse AND always false — the gate would
+// silently fail OPEN, accepting every image including genuine placeholders,
+// with zero indication anything is wrong. Self-defaulting makes this robust
 // regardless of caller.
 func (cfg *Config) flatThresholds() flatThresholds {
 	return flatThresholds{
@@ -253,6 +290,14 @@ func flatSampleStep(width, height int) (stepX, stepY int) {
 // flatBucket quantizes an RGBA() triple (16-bit, alpha-premultiplied per the
 // image.Color contract) down to a flatBitsPerChannel-per-channel coarse
 // bucket index in [0, flatBucketCount).
+//
+// The gate assumes opaque input: alpha-premultiplied RGB darkens toward
+// black as alpha drops, so a translucent PNG with real color underneath
+// reads flatter (closer to solid black) than it visually renders. Pipeline
+// candidates are download-then-JPEG-decoded (validate_pipeline.go), which
+// are always opaque, so this doesn't bite in practice — flagging it here
+// for any future caller that feeds isNonPhotographic a translucent PNG/WebP
+// directly.
 func flatBucket(r, g, b uint32) int {
 	const shift = 16 - flatBitsPerChannel
 	ri := int(r >> shift)

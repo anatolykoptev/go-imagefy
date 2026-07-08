@@ -79,11 +79,13 @@ type Config struct {
 	// FlatImageMaxGradientEnergy is the maximum mean pixel-to-pixel luma
 	// difference (8-bit-equivalent units) between adjacent sampled pixels
 	// allowed for the flat/non-photographic reject gate to fire. This is the
-	// palette-independent discriminator: it's what separates a dead-flat
-	// placeholder from a legitimately low-contrast real photo (overcast
-	// snow, fog, night sky, high-key studio) that would otherwise also
-	// collapse the three palette signals above.
-	// default: DefaultFlatImageMaxGradientEnergy (1.2). <= 0 means "use default".
+	// palette-independent discriminator: insurance against an unseeded flat
+	// placeholder near the palette boundary, and against a real photo that
+	// is BOTH near-monochrome AND denoised/heavily-recompressed (denoising
+	// destroys the sensor-noise micro-texture the other three palette
+	// signals can't see) — see flatimage.go's package doc comment for the
+	// full rationale and measured margins.
+	// default: DefaultFlatImageMaxGradientEnergy (0.02). <= 0 means "use default".
 	FlatImageMaxGradientEnergy float64
 
 	// DisableFlatImageDetection turns off the flat/non-photographic reject

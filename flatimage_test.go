@@ -226,27 +226,20 @@ func TestIsNonPhotographic_FPGuardEventPosterMargin(t *testing.T) {
 }
 
 // TestIsNonPhotographic_FPGuardLowContrastPhotoMargins is the dedicated
-// margin assertion for the false-positive class a code-quality review found
-// (HIGH): legitimately low-contrast REAL photos — overcast snow, dark night
-// sky, fog, a high-key white-backdrop studio shot — whose three palette
-// signals correlate (a narrow tonal band collapses dominantFraction,
-// uniqueBuckets, and entropy together), so palette signals ALONE cannot
-// reliably tell them apart from a genuine flat placeholder. gradientEnergy
-// is the palette-independent signal that does: real sensor noise / tonal
-// micro-gradients keep gradientEnergy comfortably above the epsilon even in
-// these flattest-available real fixtures.
+// margin assertion for legitimately low-contrast REAL photos — overcast
+// snow, dark night sky, fog, a high-key white-backdrop studio shot. At the
+// SHIPPED default palette thresholds none of these un-doctored photos
+// actually collapses the palette (closest: high_key.jpg at ~0.81 vs. the
+// 0.85 reject threshold) — the palette gate alone already accepts every one
+// of them. This test is the regression guard for that: confirms none is
+// ever rejected, and logs the gradientEnergy margin above epsilon as
+// supplementary insurance data (see TestIsNonPhotographic_
+// GradientSignalIsLoadBearing for the fixture that DOES genuinely collapse
+// the palette and where gradientEnergy is what saves it).
 //
 // Fixtures (testdata/fp_guard/{snow,night_sky,fog,high_key}.jpg) are real
 // Wikimedia Commons photographs, not synthetic gradients — synthetic flat
 // images lack real sensor noise and would falsely "prove" the gate works.
-// Logs every signal + the gradientEnergy margin above epsilon so a future
-// threshold retune has concrete regression data. high_key.jpg is the
-// closest real-world case found to the palette-collapse threshold
-// (dominantFraction ~0.81 vs. the 0.85 reject threshold); night_sky.jpg has
-// the lowest gradientEnergy of any real fixture in the corpus (a long
-// dark-sky exposure) — see TestIsNonPhotographic_GradientSignalIsLoadBearing
-// for the case where palette collapse is deliberately reproduced (via a
-// tightened threshold) and gradientEnergy is what rescues it.
 func TestIsNonPhotographic_FPGuardLowContrastPhotoMargins(t *testing.T) {
 	t.Parallel()
 
@@ -261,14 +254,14 @@ func TestIsNonPhotographic_FPGuardLowContrastPhotoMargins(t *testing.T) {
 		}
 
 		m := computeFlatMetrics(img)
-		t.Logf("%-14s dominantFraction=%.4f(<%.2f?) unique=%3d(<=%d?) entropy=%.4f(<=%.2f?) gradientEnergy=%.4f (epsilon=%.2f, margin=%.4f)",
+		t.Logf("%-14s dominantFraction=%.4f(<%.2f?) unique=%3d(<=%d?) entropy=%.4f(<=%.2f?) gradientEnergy=%.4f (epsilon=%.3f, margin=%.4f)",
 			name, m.dominantFraction, DefaultFlatImageDominantFraction,
 			m.uniqueBuckets, DefaultFlatImageMaxUniqueBuckets,
 			m.entropyBits, DefaultFlatImageMaxEntropyBits,
 			m.gradientEnergy, th.maxGradientEnergy, m.gradientEnergy-th.maxGradientEnergy)
 
 		if m.gradientEnergy <= th.maxGradientEnergy {
-			t.Errorf("%s: gradientEnergy=%.4f does not clear epsilon=%.2f — this real low-contrast photo is no longer distinguishable from a dead-flat placeholder",
+			t.Errorf("%s: gradientEnergy=%.4f does not clear epsilon=%.3f — this real low-contrast photo is no longer distinguishable from a dead-flat placeholder",
 				name, m.gradientEnergy, th.maxGradientEnergy)
 		}
 
@@ -280,57 +273,58 @@ func TestIsNonPhotographic_FPGuardLowContrastPhotoMargins(t *testing.T) {
 }
 
 // TestIsNonPhotographic_GradientSignalIsLoadBearing reproduces the exact
-// HIGH-severity scenario a code-quality review reported: the three palette
-// signals are correlated, so once dominantFraction crosses a threshold for a
-// narrow-tonal-band scene, uniqueBuckets/entropy tend to follow — palette
-// alone can misclassify a real low-contrast photo as a placeholder. This
-// test deliberately tightens dominantFraction to 0.80 (a plausible operator
-// retune, and close to high_key.jpg's actual ~0.81) to reproduce a genuine
-// palette collapse on a REAL photo, then proves gradientEnergy is what saves
-// it — and that the check is genuinely load-bearing, not dead code: raising
-// maxGradientEnergy past the photo's own gradient energy (simulating the
-// gradient signal being absent/misconfigured) flips it back to rejected.
+// intersection risk a code-quality review reported (MAJOR): a real photo
+// that is BOTH near-monochrome AND denoised/heavily-recompressed — denoising
+// destroys the sensor-noise micro-texture the palette signals can't see, so
+// palette collapse alone could misclassify it as a placeholder.
+//
+// testdata/fp_guard/high_key_denoised.jpg is that exact fixture: a REAL
+// photo (high_key.jpg) cropped to its near-monochrome background region,
+// then denoised (blur + quality-45 JPEG recompression — a realistic "went
+// through a lossy CDN/thumbnail pipeline" scenario, not a synthetic
+// gradient). Unlike the un-doctored fixtures above, this one genuinely
+// collapses the palette at the SHIPPED DEFAULT dominantFraction threshold —
+// no artificial threshold tightening needed to reproduce the reported risk.
+// gradientEnergy is what keeps it from being rejected. The test also proves
+// the check is load-bearing, not dead code: raising maxGradientEnergy past
+// the photo's own gradient energy (simulating the gradient signal being
+// absent/misconfigured) flips it back to rejected.
 func TestIsNonPhotographic_GradientSignalIsLoadBearing(t *testing.T) {
 	t.Parallel()
 
 	corpus := loadFPGuardCorpus(t)
-	img := corpus["high_key.jpg"]
+	img := corpus["high_key_denoised.jpg"]
 	if img == nil {
-		t.Fatal("testdata/fp_guard/high_key.jpg not found in corpus")
+		t.Fatal("testdata/fp_guard/high_key_denoised.jpg not found in corpus")
 	}
 
 	m := computeFlatMetrics(img)
-	t.Logf("high_key.jpg: dominantFraction=%.4f unique=%d entropy=%.4f gradientEnergy=%.4f",
+	t.Logf("high_key_denoised.jpg: dominantFraction=%.4f unique=%d entropy=%.4f gradientEnergy=%.4f",
 		m.dominantFraction, m.uniqueBuckets, m.entropyBits, m.gradientEnergy)
 
-	const tightenedDominantFraction = 0.80
-	if m.dominantFraction < tightenedDominantFraction {
-		t.Fatalf("precondition failed: high_key.jpg dominantFraction=%.4f is below the tightened threshold %.2f — pick a flatter fixture to reproduce the palette-collapse scenario",
-			m.dominantFraction, tightenedDominantFraction)
+	// Precondition: this fixture must genuinely collapse the palette at the
+	// real shipped defaults — that's the whole point (no tightening hack).
+	if m.dominantFraction < DefaultFlatImageDominantFraction ||
+		m.uniqueBuckets > DefaultFlatImageMaxUniqueBuckets ||
+		m.entropyBits > DefaultFlatImageMaxEntropyBits {
+		t.Fatalf("precondition failed: high_key_denoised.jpg does not collapse the palette at default thresholds (dominantFraction=%.4f unique=%d entropy=%.4f) — fixture no longer reproduces the intersection risk",
+			m.dominantFraction, m.uniqueBuckets, m.entropyBits)
 	}
 
-	// Palette collapsed (by construction, via the tightened threshold) AND
-	// the gradient epsilon is the real production default: gradientEnergy
-	// must rescue the photo.
-	rescued := flatThresholds{
-		dominantFraction:  tightenedDominantFraction,
-		maxUniqueBuckets:  DefaultFlatImageMaxUniqueBuckets,
-		maxEntropyBits:    DefaultFlatImageMaxEntropyBits,
-		maxGradientEnergy: DefaultFlatImageMaxGradientEnergy,
-	}
-	if rejected, reason := isNonPhotographic(img, rescued); rejected {
-		t.Errorf("gradient signal did not rescue a real low-contrast photo from a collapsed palette (reason=%q) — this is the exact HIGH-severity false-positive class",
+	// At the real production defaults, gradientEnergy must rescue the photo.
+	if rejected, reason := isNonPhotographic(img, defaultFlatThresholds()); rejected {
+		t.Errorf("gradient signal did not rescue a real, denoised, near-monochrome photo from a genuinely collapsed palette (reason=%q) — this is the exact intersection risk a code-quality review flagged",
 			reason)
 	}
 
-	// Same tightened palette, but maxGradientEnergy raised above the photo's
-	// own gradient energy — simulating the gradient check being absent or
-	// misconfigured. This MUST reject: if it doesn't, the gradient
-	// parameter isn't actually being consulted (dead code / no-op).
-	noRescue := rescued
-	noRescue.maxGradientEnergy = m.gradientEnergy + 1.0 // comfortably above the photo's actual energy
+	// Same real palette collapse, but maxGradientEnergy raised above the
+	// photo's own gradient energy — simulating the gradient check being
+	// absent or misconfigured. This MUST reject: if it doesn't, the
+	// gradient parameter isn't actually being consulted (dead code / no-op).
+	noRescue := defaultFlatThresholds()
+	noRescue.maxGradientEnergy = m.gradientEnergy + 0.05 // comfortably above the photo's actual energy
 	if rejected, _ := isNonPhotographic(img, noRescue); !rejected {
-		t.Error("expected a misconfigured (too-loose) gradient threshold to reject high_key.jpg — gradientEnergy parameter is not being consulted")
+		t.Error("expected a misconfigured (too-loose) gradient threshold to reject high_key_denoised.jpg — gradientEnergy parameter is not being consulted")
 	}
 }
 
@@ -615,5 +609,57 @@ func TestValidateOne_AcceptsLowContrastPhotoCandidates(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestValidateOne_AcceptsDenoisedNearMonochromeCandidate is the
+// pipeline-level counterpart to TestIsNonPhotographic_
+// GradientSignalIsLoadBearing: drives the real, denoised, near-monochrome
+// photo fixture (which genuinely collapses the palette at default
+// thresholds) through the full validateOne chain and confirms gradientEnergy
+// rescues it in production, not just at the isNonPhotographic unit level.
+func TestValidateOne_AcceptsDenoisedNearMonochromeCandidate(t *testing.T) {
+	t.Parallel()
+
+	corpus := loadFPGuardCorpus(t)
+	img := corpus["high_key_denoised.jpg"]
+	if img == nil {
+		t.Fatal("testdata/fp_guard/high_key_denoised.jpg not found in corpus")
+	}
+	srv := newImageServer(t, "image/jpeg", encodeJPEG(t, img))
+
+	var events []ClassificationEvent
+	var eventsMu sync.Mutex
+
+	cfg := &Config{
+		HTTPClient: srv.Client(),
+		// high_key_denoised.jpg is cropped to 100px wide; lower the floor so
+		// ValidateImageURL doesn't reject it before the flatness gate even
+		// runs (irrelevant to what this test verifies).
+		MinImageWidth: 50,
+		OnClassification: func(e ClassificationEvent) {
+			eventsMu.Lock()
+			events = append(events, e)
+			eventsMu.Unlock()
+		},
+	}
+
+	cand := ImageCandidate{
+		ImgURL: srv.URL + "/photo.jpg",
+		Source: srv.URL + "/page",
+		Title:  "Denoised near-monochrome background",
+	}
+
+	results := cfg.validateCandidates(context.Background(), []ImageCandidate{cand}, 5)
+	if len(results) != 1 {
+		t.Errorf("denoised near-monochrome candidate was rejected by the pipeline, want accepted: results=%+v", results)
+	}
+
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+	for _, e := range events {
+		if e.Class == ClassPlaceholder && e.Source == "flat_image" {
+			t.Errorf("denoised near-monochrome candidate was rejected by the flatness gate: %+v", e)
+		}
 	}
 }
