@@ -22,7 +22,9 @@ func TestReverseCheck_ContextCancelled(t *testing.T) {
 		case <-handlerDone:
 		case <-time.After(5 * time.Second):
 		}
-		json.NewEncoder(w).Encode(reverseResponse{IsStock: true})
+		if err := json.NewEncoder(w).Encode(reverseResponse{IsStock: true}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer func() {
 		close(handlerDone)
@@ -53,7 +55,9 @@ func TestReverseCheck_SlowServer_Timeout(t *testing.T) {
 		case <-handlerDone:
 		case <-time.After(30 * time.Second):
 		}
-		json.NewEncoder(w).Encode(reverseResponse{IsStock: true})
+		if err := json.NewEncoder(w).Encode(reverseResponse{IsStock: true}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer func() {
 		close(handlerDone) // unblock handler so srv.Close() doesn't hang
@@ -80,7 +84,9 @@ func TestReverseCheck_MalformedJSON(t *testing.T) {
 	// ox-browser returns garbage JSON with 200 OK.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"broken": json`))
+		if _, err := w.Write([]byte(`{"broken": json`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -108,7 +114,9 @@ func TestReverseCheck_EmptyBody(t *testing.T) {
 func TestReverseCheck_UnexpectedJSON(t *testing.T) {
 	// ox-browser returns valid JSON but unexpected structure (error response).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"error": "service overloaded", "code": 503}`))
+		if _, err := w.Write([]byte(`{"error": "service overloaded", "code": 503}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -135,7 +143,7 @@ func TestReverseCheck_HTTP429RateLimit(t *testing.T) {
 func TestReverseCheck_MultipleStockDomains(t *testing.T) {
 	// Image found on multiple stock sites — all should be reported.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(reverseResponse{
+		err := json.NewEncoder(w).Encode(reverseResponse{
 			IsStock:      true,
 			StockDomains: []string{"shutterstock.com", "gettyimages.com", "alamy.com"},
 			Matches: []reverseMatch{
@@ -144,6 +152,9 @@ func TestReverseCheck_MultipleStockDomains(t *testing.T) {
 				{PageURL: "https://alamy.com/3", Domain: "alamy.com"},
 			},
 		})
+		if err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -160,7 +171,9 @@ func TestReverseCheck_MultipleStockDomains(t *testing.T) {
 func TestReverseCheck_NilStockDomains(t *testing.T) {
 	// ox-browser returns is_stock=false with null stock_domains (not empty array).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte(`{"matches":[],"is_stock":false,"stock_domains":null,"engines_used":["yandex"]}`))
+		if _, err := w.Write([]byte(`{"matches":[],"is_stock":false,"stock_domains":null,"engines_used":["yandex"]}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -180,7 +193,9 @@ func TestReverseCheck_TrailingSlashURL(t *testing.T) {
 		if r.URL.Path != "/images/reverse" {
 			t.Errorf("unexpected path: %s (double slash?)", r.URL.Path)
 		}
-		json.NewEncoder(w).Encode(reverseResponse{IsStock: false})
+		if err := json.NewEncoder(w).Encode(reverseResponse{IsStock: false}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -197,7 +212,9 @@ func TestReverseCheck_ConcurrentSafe(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callCount.Add(1)
 		time.Sleep(50 * time.Millisecond) // simulate real latency
-		json.NewEncoder(w).Encode(reverseResponse{IsStock: false})
+		if err := json.NewEncoder(w).Encode(reverseResponse{IsStock: false}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -235,10 +252,13 @@ func TestReverseCheck_ConnectionRefused(t *testing.T) {
 func TestReverseCheck_OnClassificationCallback(t *testing.T) {
 	// Verify pipeline emits "reverse_stock" classification event.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(reverseResponse{
+		err := json.NewEncoder(w).Encode(reverseResponse{
 			IsStock:      true,
 			StockDomains: []string{"shutterstock.com"},
 		})
+		if err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -277,10 +297,16 @@ func TestReverseCheck_LargeResponse_Truncated(t *testing.T) {
 	// Response exceeds reverseBodyLimit — should be truncated and fail gracefully.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Write valid JSON prefix, then pad to exceed 512KB.
-		w.Write([]byte(`{"is_stock":true,"stock_domains":["shutterstock.com"],"matches":[`))
+		if _, err := w.Write([]byte(`{"is_stock":true,"stock_domains":["shutterstock.com"],"matches":[`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 		pad := strings.Repeat(`{"page_url":"https://x.com/`+strings.Repeat("a", 1000)+`","domain":"x.com"},`, 600)
-		w.Write([]byte(pad))
-		w.Write([]byte(`]}`))
+		if _, err := w.Write([]byte(pad)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+		if _, err := w.Write([]byte(`]}`)); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -299,11 +325,15 @@ func TestReverseCheck_ImageURLWithSpecialChars(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req reverseRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
 		if req.URL != imageURL {
 			t.Errorf("URL mangled: expected %q, got %q", imageURL, req.URL)
 		}
-		json.NewEncoder(w).Encode(reverseResponse{IsStock: false})
+		if err := json.NewEncoder(w).Encode(reverseResponse{IsStock: false}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 

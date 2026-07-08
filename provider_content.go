@@ -17,6 +17,15 @@ const (
 	contentFetchTimeout = 10 * time.Second
 	contentBodyLimit    = 2 * 1024 * 1024 // 2MB
 	contentMaxResults   = 8
+
+	// contentProviderName is the provider name returned by Name() and matched
+	// by callers (e.g. Config.hasContentProvider) to detect an already-wired
+	// ContentImageProvider.
+	contentProviderName = "content"
+
+	// minSlugTokenLength is the minimum token length kept by slugTokensFrom;
+	// shorter tokens are noise (too common to be a useful slug match).
+	minSlugTokenLength = 4
 )
 
 // contentSkipPatterns are filename substrings indicating non-content images.
@@ -29,12 +38,6 @@ var contentSkipPatterns = []string{
 // contentSizeRe matches trailing size suffix like -320x240 or -200x150 in a
 // filename before the extension. Used to detect (and strip) thumbnail variants.
 var contentSizeRe = regexp.MustCompile(`-(\d+)x(\d+)$`)
-
-// contentImgRe extracts src and optional width/height from <img> tags.
-// Captures groups: 1=src from src="...", 2=src from src='...', 3=width, 4=height.
-var contentImgRe = regexp.MustCompile(
-	`(?i)<img\b[^>]*?\bsrc=["']([^"'>]+)["'][^>]*>|<img\b[^>]*?\bsrc='([^'>]+)'[^>]*>`,
-)
 
 // contentImgAttrRe extracts individual attributes from an <img> tag string.
 var (
@@ -68,75 +71,83 @@ type ContentImageProvider struct {
 }
 
 // Name returns the provider name.
-func (p *ContentImageProvider) Name() string { return "content" }
+func (p *ContentImageProvider) Name() string { return contentProviderName }
 
-// Search fetches opts.PageURL, extracts image candidates, and returns them sorted
-// best-first (content images > og/twitter fallback). Returns empty on any fetch failure.
-func (p *ContentImageProvider) Search(ctx context.Context, query string, opts SearchOpts) ([]ImageCandidate, error) {
-	if opts.PageURL == "" {
-		return nil, nil
-	}
+// contentImageBuckets partitions extracted image candidates by priority tier
+// (slug-matched content > other content > JSON-LD > og/twitter fallback) and
+// dedupes across all tiers via a shared seen-set.
+type contentImageBuckets struct {
+	priority   []ImageCandidate // slug-matched content images
+	normal     []ImageCandidate // other content images on same domain
+	jsonld     []ImageCandidate // JSON-LD images
+	ogFallback []ImageCandidate
+	seen       map[string]struct{}
+}
 
-	pageBody, err := p.fetchPage(ctx, opts.PageURL)
-	if err != nil || pageBody == "" {
-		return nil, nil
-	}
+func newContentImageBuckets() *contentImageBuckets {
+	return &contentImageBuckets{seen: map[string]struct{}{}}
+}
 
-	pageHost := registrableDomain(opts.PageURL)
-	slugTokens := slugTokensFrom(opts.PageURL, query)
-
-	var priority []ImageCandidate // slug-matched content images
-	var normal []ImageCandidate   // other content images on same domain
-	var jsonld []ImageCandidate   // JSON-LD images
-	var ogFallback []ImageCandidate
-
-	seen := map[string]struct{}{}
-
-	addIfNew := func(imgURL string, title string, bucket *[]ImageCandidate) {
+// adder returns a closure that cleans, dedupes, and license-filters a
+// candidate image URL before appending it into the given bucket.
+func (b *contentImageBuckets) adder(sourceURL string) func(imgURL, title string, bucket *[]ImageCandidate) {
+	return func(imgURL, title string, bucket *[]ImageCandidate) {
 		clean := html.UnescapeString(strings.TrimSpace(imgURL))
 		if clean == "" || !strings.HasPrefix(clean, "http") {
 			return
 		}
 		norm := normalizeImgURL(clean)
-		if _, dup := seen[norm]; dup {
+		if _, dup := b.seen[norm]; dup {
 			return
 		}
-		seen[norm] = struct{}{}
+		b.seen[norm] = struct{}{}
 		if IsLogoOrBanner(strings.ToLower(clean)) {
 			return
 		}
-		license := CheckLicense(clean, opts.PageURL)
+		license := CheckLicense(clean, sourceURL)
 		if license == LicenseBlocked {
 			return
 		}
 		*bucket = append(*bucket, ImageCandidate{
 			ImgURL:  clean,
-			Source:  opts.PageURL,
+			Source:  sourceURL,
 			Title:   title,
 			License: license,
 		})
 	}
+}
 
-	// 1. Extract og:image and twitter:image (kept as fallback).
+// extractOGFallback adds og:image and twitter:image candidates (kept as the
+// lowest-priority fallback tier).
+func (b *contentImageBuckets) extractOGFallback(pageBody, pageURL string) {
+	add := b.adder(pageURL)
 	if ogURL := ExtractOGImageURL(pageBody); ogURL != "" {
-		addIfNew(ogURL, "og:image", &ogFallback)
+		add(ogURL, "og:image", &b.ogFallback)
 	}
 	if m := twitterImageRe.FindStringSubmatch(pageBody); m != nil {
 		tw := m[1]
 		if tw == "" {
 			tw = m[2]
 		}
-		addIfNew(tw, "twitter:image", &ogFallback)
+		add(tw, "twitter:image", &b.ogFallback)
 	}
+}
 
-	// 2. Extract JSON-LD image fields.
+// extractJSONLD adds image URLs found in JSON-LD script blocks.
+func (b *contentImageBuckets) extractJSONLD(pageBody, pageURL string) {
+	add := b.adder(pageURL)
 	for _, match := range jsonLDScriptRe.FindAllStringSubmatch(pageBody, -1) {
 		if u := extractJSONLDImage(match[1]); u != "" {
-			addIfNew(u, "jsonld:image", &jsonld)
+			add(u, "jsonld:image", &b.jsonld)
 		}
 	}
+}
 
-	// 3. Extract <img> tags — content images on same domain.
+// extractContentImages adds <img> tags whose src is on the same registrable
+// domain as the page, filtering out logos/icons and tiny thumbnails, and
+// splitting slug-matched images into the priority tier.
+func (b *contentImageBuckets) extractContentImages(pageBody, pageURL, pageHost string, slugTokens []string) {
+	add := b.adder(pageURL)
 	for _, imgTag := range contentImgTagRe.FindAllString(pageBody, -1) {
 		src := extractAttr(contentSrcRe, imgTag)
 		if src == "" {
@@ -167,23 +178,54 @@ func (p *ContentImageProvider) Search(ctx context.Context, query string, opts Se
 		src = normalizeImgURL(src)
 
 		if isSlugMatch(src, slugTokens) {
-			addIfNew(src, "content:img:slug", &priority)
+			add(src, "content:img:slug", &b.priority)
 		} else {
-			addIfNew(src, "content:img", &normal)
+			add(src, "content:img", &b.normal)
 		}
 	}
+}
 
-	// Merge: priority slug > normal content > jsonld > og fallback.
+// merged combines all tiers in priority order (slug > normal > jsonld > og
+// fallback) and truncates to max results.
+func (b *contentImageBuckets) merged(maxResults int) []ImageCandidate {
 	var out []ImageCandidate
-	out = append(out, priority...)
-	out = append(out, normal...)
-	out = append(out, jsonld...)
-	out = append(out, ogFallback...)
+	out = append(out, b.priority...)
+	out = append(out, b.normal...)
+	out = append(out, b.jsonld...)
+	out = append(out, b.ogFallback...)
 
-	if len(out) > contentMaxResults {
-		out = out[:contentMaxResults]
+	if len(out) > maxResults {
+		out = out[:maxResults]
 	}
-	return out, nil
+	return out
+}
+
+// Search fetches opts.PageURL, extracts image candidates, and returns them sorted
+// best-first (content images > og/twitter fallback). Returns empty on any fetch failure.
+//
+// Candidates are gathered in three passes — og/twitter fallback, JSON-LD, then
+// same-domain <img> tags — sharing one dedup set so an image already picked up
+// by an earlier (lower-index but not necessarily higher-priority — see bucket
+// merge order) pass isn't re-added by a later one.
+func (p *ContentImageProvider) Search(ctx context.Context, query string, opts SearchOpts) ([]ImageCandidate, error) {
+	if opts.PageURL == "" {
+		return nil, nil
+	}
+
+	pageBody, err := p.fetchPage(ctx, opts.PageURL)
+	if err != nil || pageBody == "" {
+		return nil, nil
+	}
+
+	pageHost := registrableDomain(opts.PageURL)
+	slugTokens := slugTokensFrom(opts.PageURL, query)
+
+	buckets := newContentImageBuckets()
+	buckets.extractOGFallback(pageBody, opts.PageURL)
+	buckets.extractJSONLD(pageBody, opts.PageURL)
+	buckets.extractContentImages(pageBody, opts.PageURL, pageHost, slugTokens)
+
+	return buckets.merged(contentMaxResults), nil
 }
 
 // fetchPage performs a GET request for pageURL and returns the response body.
@@ -244,7 +286,7 @@ func slugTokensFrom(pageURL, query string) []string {
 
 	add := func(s string) {
 		s = strings.ToLower(s)
-		if len(s) >= 4 {
+		if len(s) >= minSlugTokenLength {
 			if _, ok := seen[s]; !ok {
 				seen[s] = struct{}{}
 				tokens = append(tokens, s)

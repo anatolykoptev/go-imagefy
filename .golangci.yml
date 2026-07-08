@@ -3,6 +3,14 @@ version: "2"
 run:
   timeout: 5m
 
+issues:
+  # Defaults (max-same-issues: 3, max-issues-per-linter: 50) silently truncate
+  # the report once a linter's identical-message count exceeds the cap — a
+  # gate that hides part of the debt it's supposed to surface is not a real
+  # gate. Show everything so "0 issues" actually means zero.
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
 linters:
   default: standard
   enable:

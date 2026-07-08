@@ -74,7 +74,7 @@ func (cfg *Config) FindImages(ctx context.Context, opts FindOpts) []ImageCandida
 // hasContentProvider checks if a ContentImageProvider is already in the Providers list.
 func (cfg *Config) hasContentProvider() bool {
 	for _, p := range cfg.Providers {
-		if p.Name() == "content" {
+		if p.Name() == contentProviderName {
 			return true
 		}
 	}
