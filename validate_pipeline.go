@@ -49,9 +49,10 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 //  2. Extra domain pre-check — skip download for known-blocked domains
 //  3. downloadForValidation — single download for dedup + metadata + LLM
 //  4. rejectedByHash — perceptual dedup + placeholder blocklist, one shared dHash (see rejectedByHash)
-//  5. ExtractImageMetadata + AssessLicense — domain + metadata signals
-//  6. ReverseCheck — reverse image search for laundered stock (opt-in)
-//  7. LLM Vision classification — fallback for unknown license
+//  5. rejectedByFlatness — flat/non-photographic palette reject gate (see flatimage.go)
+//  6. ExtractImageMetadata + AssessLicense — domain + metadata signals
+//  7. ReverseCheck — reverse image search for laundered stock (opt-in)
+//  8. LLM Vision classification — fallback for unknown license
 func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate, dedup *dedupFilter, placeholders *placeholderMatcher) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -72,6 +73,10 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 	data, mimeType, img := cfg.downloadForValidation(ctx, cand.ImgURL)
 
 	if cfg.rejectedByHash(img, cand.ImgURL, dedup, placeholders) {
+		return
+	}
+
+	if cfg.rejectedByFlatness(img, cand.ImgURL) {
 		return
 	}
 
@@ -132,6 +137,30 @@ func (cfg *Config) rejectedByHash(img image.Image, url string, dedup *dedupFilte
 	}
 
 	return false
+}
+
+// rejectedByFlatness rejects img if its pixel palette is flat / near-solid-color
+// / tiny AND it lacks real pixel-to-pixel micro-texture — a content-agnostic
+// signal for an UNKNOWN placeholder or blank image that the phash blocklist
+// (rejectedByHash) can't catch because it only knows seeded hashes. See
+// flatimage.go for the full four-signal verdict + rationale (why palette
+// alone false-rejects legitimate low-contrast photos).
+//
+// Graceful degradation: a nil img (decode failed) never false-rejects — same
+// contract as rejectedByHash — let downstream checks (license assessment,
+// reverse-stock, vision classification) decide instead. cfg.DisableFlatImageDetection
+// is an operator kill switch for this gate specifically.
+func (cfg *Config) rejectedByFlatness(img image.Image, url string) bool {
+	if img == nil || cfg.DisableFlatImageDetection {
+		return false
+	}
+	rejected, reason := isNonPhotographic(img, cfg.flatThresholds())
+	if !rejected {
+		return false
+	}
+	slog.Debug("imagefy: flat/non-photographic rejected", "url", url, "reason", reason)
+	cfg.emitClassification(url, ClassPlaceholder, 1.0, "flat_image")
+	return true
 }
 
 // isBlockedByExtraDomains checks extra blocked domains before downloading.

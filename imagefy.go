@@ -59,6 +59,41 @@ type Config struct {
 	// go-imagefy release.
 	PlaceholderHashes []uint64
 
+	// FlatImageDominantFraction is the minimum share of sampled pixels that
+	// must fall in a single coarse color bucket for the flat/non-photographic
+	// reject gate (see flatimage.go) to fire.
+	// default: DefaultFlatImageDominantFraction (0.85). <= 0 means "use default".
+	FlatImageDominantFraction float64
+
+	// FlatImageMaxUniqueBuckets is the maximum number of distinct coarse
+	// color buckets allowed for the flat/non-photographic reject gate to fire.
+	// default: DefaultFlatImageMaxUniqueBuckets (32). <= 0 means "use default".
+	FlatImageMaxUniqueBuckets int
+
+	// FlatImageMaxEntropyBits is the maximum Shannon entropy (bits) of the
+	// sampled color histogram allowed for the flat/non-photographic reject
+	// gate to fire.
+	// default: DefaultFlatImageMaxEntropyBits (1.5). <= 0 means "use default".
+	FlatImageMaxEntropyBits float64
+
+	// FlatImageMaxGradientEnergy is the maximum mean pixel-to-pixel luma
+	// difference (8-bit-equivalent units) between adjacent sampled pixels
+	// allowed for the flat/non-photographic reject gate to fire. This is the
+	// palette-independent discriminator: insurance against an unseeded flat
+	// placeholder near the palette boundary, and against a real photo that
+	// is BOTH near-monochrome AND denoised/heavily-recompressed (denoising
+	// destroys the sensor-noise micro-texture the other three palette
+	// signals can't see) — see flatimage.go's package doc comment for the
+	// full rationale and measured margins.
+	// default: DefaultFlatImageMaxGradientEnergy (0.02). <= 0 means "use default".
+	FlatImageMaxGradientEnergy float64
+
+	// DisableFlatImageDetection turns off the flat/non-photographic reject
+	// gate (flatimage.go) entirely. The gate is always-on by default (zero
+	// value = false = enabled) — set true to kill it in production without a
+	// redeploy, e.g. if a false-positive class is discovered live.
+	DisableFlatImageDetection bool
+
 	// OxBrowserURL is the base URL of the ox-browser service for reverse image search.
 	// When set, enables reverse stock detection in the validation pipeline.
 	// Example: "http://ox-browser:8901" or "http://127.0.0.1:8901".
@@ -90,5 +125,17 @@ func (c *Config) defaults() { //nolint:unused // called by Layer 1/2 methods add
 	}
 	if c.HTTPClient == nil {
 		c.HTTPClient = http.DefaultClient
+	}
+	if c.FlatImageDominantFraction <= 0 {
+		c.FlatImageDominantFraction = DefaultFlatImageDominantFraction
+	}
+	if c.FlatImageMaxUniqueBuckets <= 0 {
+		c.FlatImageMaxUniqueBuckets = DefaultFlatImageMaxUniqueBuckets
+	}
+	if c.FlatImageMaxEntropyBits <= 0 {
+		c.FlatImageMaxEntropyBits = DefaultFlatImageMaxEntropyBits
+	}
+	if c.FlatImageMaxGradientEnergy <= 0 {
+		c.FlatImageMaxGradientEnergy = DefaultFlatImageMaxGradientEnergy
 	}
 }
