@@ -59,6 +59,23 @@ type Config struct {
 	// go-imagefy release.
 	PlaceholderHashes []uint64
 
+	// FlatImageDominantFraction is the minimum share of sampled pixels that
+	// must fall in a single coarse color bucket for the flat/non-photographic
+	// reject gate (see flatimage.go) to fire.
+	// default: DefaultFlatImageDominantFraction (0.85). <= 0 means "use default".
+	FlatImageDominantFraction float64
+
+	// FlatImageMaxUniqueBuckets is the maximum number of distinct coarse
+	// color buckets allowed for the flat/non-photographic reject gate to fire.
+	// default: DefaultFlatImageMaxUniqueBuckets (32). <= 0 means "use default".
+	FlatImageMaxUniqueBuckets int
+
+	// FlatImageMaxEntropyBits is the maximum Shannon entropy (bits) of the
+	// sampled color histogram allowed for the flat/non-photographic reject
+	// gate to fire.
+	// default: DefaultFlatImageMaxEntropyBits (1.5). <= 0 means "use default".
+	FlatImageMaxEntropyBits float64
+
 	// OxBrowserURL is the base URL of the ox-browser service for reverse image search.
 	// When set, enables reverse stock detection in the validation pipeline.
 	// Example: "http://ox-browser:8901" or "http://127.0.0.1:8901".
@@ -90,5 +107,14 @@ func (c *Config) defaults() { //nolint:unused // called by Layer 1/2 methods add
 	}
 	if c.HTTPClient == nil {
 		c.HTTPClient = http.DefaultClient
+	}
+	if c.FlatImageDominantFraction <= 0 {
+		c.FlatImageDominantFraction = DefaultFlatImageDominantFraction
+	}
+	if c.FlatImageMaxUniqueBuckets <= 0 {
+		c.FlatImageMaxUniqueBuckets = DefaultFlatImageMaxUniqueBuckets
+	}
+	if c.FlatImageMaxEntropyBits <= 0 {
+		c.FlatImageMaxEntropyBits = DefaultFlatImageMaxEntropyBits
 	}
 }
