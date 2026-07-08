@@ -162,6 +162,13 @@ func TestPlaceholderMatcher_DistinctImageNotMatched(t *testing.T) {
 // TestPlaceholderMatcher_FPGuardRealPhotos is the critical false-positive guard:
 // real, high-entropy photos must NEVER be flagged by the default blocklist. If
 // this test fails, placeholderThreshold is too loose and must be tightened.
+//
+// The corpus includes testdata/fp_guard/event_poster.jpg — a real, low-entropy,
+// text-on-solid-background promotional poster — which is the actual production
+// risk class (event cards, not generic stock photos): structurally the closest
+// LEGITIMATE image type to the "image unavailable" placeholders this gate
+// blocks. See TestPlaceholderMatcher_FPGuardLowEntropyEventPoster for the
+// dedicated distance-to-nearest-seed assertion on that fixture.
 func TestPlaceholderMatcher_FPGuardRealPhotos(t *testing.T) {
 	t.Parallel()
 
@@ -173,6 +180,146 @@ func TestPlaceholderMatcher_FPGuardRealPhotos(t *testing.T) {
 			t.Errorf("FALSE POSITIVE: real photo %q matched placeholder blocklist (source=%q) — placeholderThreshold=%d is too loose",
 				name, source, placeholderThreshold)
 		}
+	}
+}
+
+// TestPlaceholderMatcher_FPGuardLowEntropyEventPoster is the dedicated FP-guard
+// for the production risk class that motivated this gate: piter.now event
+// cards are text-on-solid-background promotional graphics — structurally the
+// closest LEGITIMATE image type to a hotlink-protection "image unavailable"
+// placeholder (also flat background + centered text). The generic photo
+// corpus (building/food/nature/street) doesn't represent this risk; this test
+// does, using a real low-entropy poster (Wikimedia Commons "Keep Calm and
+// Carry On" scan — solid-color background, centered text block).
+//
+// Asserts (and logs) the Hamming distance to every default seed so a future
+// threshold change has this as a concrete regression guard, not just a
+// pass/fail.
+func TestPlaceholderMatcher_FPGuardLowEntropyEventPoster(t *testing.T) {
+	t.Parallel()
+
+	const fixture = "testdata/fp_guard/event_poster.jpg"
+	f, err := os.Open(fixture)
+	if err != nil {
+		t.Fatalf("open %s: %v", fixture, err)
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		t.Fatalf("decode %s: %v", fixture, err)
+	}
+
+	hash, err := goimagehash.DifferenceHash(img)
+	if err != nil {
+		t.Fatalf("DifferenceHash: %v", err)
+	}
+
+	m := newPlaceholderMatcher(nil)
+	minDist := -1
+	for i, h := range m.hashes {
+		dist, err := hash.Distance(h)
+		if err != nil {
+			continue
+		}
+		t.Logf("event_poster.jpg vs default[%d] (%s): Hamming distance=%d", i, m.entries[i].source, dist)
+		if minDist == -1 || dist < minDist {
+			minDist = dist
+		}
+	}
+
+	if minDist <= placeholderThreshold {
+		t.Errorf("FALSE POSITIVE RISK: low-entropy event-poster fixture is within placeholderThreshold=%d of a default seed (nearest distance=%d) — this is exactly the production risk class (text-on-solid-background promotional graphics); tighten placeholderThreshold or reconsider the seed before shipping",
+			placeholderThreshold, minDist)
+	}
+
+	if matched, source := m.matches(img); matched {
+		t.Errorf("event-poster candidate matched placeholder blocklist (source=%q) — real event cards must never be rejected", source)
+	}
+}
+
+// TestPlaceholderMatcher_DefaultSeedsFireOnOwnSourceImage is the golden test
+// proving the embedded default hash VALUES are correct — not just that the
+// slice is non-empty (TestPlaceholderMatcher_DefaultBlocklistIsSeeded only
+// covers that). If a seed were recorded with the wrong hash function
+// (PerceptionHash/AverageHash instead of DifferenceHash), a different resize,
+// or transposed bytes, this test catches it: the recorded hash must actually
+// fire on (a small copy of) its own source image.
+func TestPlaceholderMatcher_DefaultSeedsFireOnOwnSourceImage(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		fixture        string
+		expectedSource string
+	}{
+		{
+			fixture:        "testdata/placeholders/no_image_available.jpg",
+			expectedSource: "Wikimedia Commons: File:No_Image_Available.jpg (generic image-unavailable placeholder, 547x547 JPEG)",
+		},
+		{
+			fixture:        "testdata/placeholders/no_image_available_svg.jpg",
+			expectedSource: "Wikimedia Commons: File:No_image_available.svg (rendered as 960px PNG; generic gray no-image box)",
+		},
+	}
+
+	m := newPlaceholderMatcher(nil)
+
+	for _, tc := range cases {
+		t.Run(tc.fixture, func(t *testing.T) {
+			t.Parallel()
+
+			f, err := os.Open(tc.fixture)
+			if err != nil {
+				t.Fatalf("open %s: %v", tc.fixture, err)
+			}
+			defer f.Close()
+			img, _, err := image.Decode(f)
+			if err != nil {
+				t.Fatalf("decode %s: %v", tc.fixture, err)
+			}
+
+			matched, source := m.matches(img)
+			if !matched {
+				t.Fatalf("default blocklist did NOT fire on its own source image %s — the recorded hash is dead (wrong hash function, wrong resize, or transposed bytes)", tc.fixture)
+			}
+			if source != tc.expectedSource {
+				t.Errorf("matched source = %q, want %q", source, tc.expectedSource)
+			}
+		})
+	}
+}
+
+// TestPlaceholderMatcher_MatchesHashEquivalentToMatches proves matchesHash
+// (the precomputed-hash entry point validateOne uses to share a single dHash
+// computation with the dedup check) behaves identically to matches.
+func TestPlaceholderMatcher_MatchesHashEquivalentToMatches(t *testing.T) {
+	t.Parallel()
+
+	banner := makeBannerImage(120, 90)
+	m := newPlaceholderMatcher([]uint64{hashOf(t, banner)})
+
+	hash, err := goimagehash.DifferenceHash(banner)
+	if err != nil {
+		t.Fatalf("DifferenceHash: %v", err)
+	}
+
+	wantMatched, wantSource := m.matches(banner)
+	gotMatched, gotSource := m.matchesHash(hash)
+	if gotMatched != wantMatched || gotSource != wantSource {
+		t.Errorf("matchesHash(precomputed) = (%v, %q), want matches(img) = (%v, %q)", gotMatched, gotSource, wantMatched, wantSource)
+	}
+}
+
+// TestPlaceholderMatcher_ConfigDuplicateOfDefaultIsSkipped covers the
+// exact-duplicate dedup in newPlaceholderMatcher: injecting a hash that
+// already equals a default entry must not grow the matcher's entry count.
+func TestPlaceholderMatcher_ConfigDuplicateOfDefaultIsSkipped(t *testing.T) {
+	t.Parallel()
+
+	dup := defaultPlaceholderHashes[0].hash
+	m := newPlaceholderMatcher([]uint64{dup})
+
+	if len(m.entries) != len(defaultPlaceholderHashes) {
+		t.Errorf("entries = %d, want %d (config hash duplicating a default should be skipped)", len(m.entries), len(defaultPlaceholderHashes))
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+
+	"github.com/corona10/goimagehash"
 )
 
 const validationSemaphore = 3
@@ -41,15 +43,15 @@ func (cfg *Config) validateCandidates(ctx context.Context, toValidate []ImageCan
 // validateOne validates a single candidate and appends it to validated if it passes all checks.
 // Recovers from panics to protect the goroutine pool.
 //
-// Pipeline stages:
+// Pipeline stages (dHash for stages 4 and 5 is computed once and shared — see hash below):
 //  1. ValidateImageURL — HTTP probe (dimensions, content-type, logo/banner check)
 //  2. Extra domain pre-check — skip download for known-blocked domains
 //  3. downloadForValidation — single download for dedup + metadata + LLM
 //  4. Perceptual dedup — reject visual duplicates (dHash)
-//  4.5. Placeholder blocklist — reject known hotlink-protection / "image unavailable" graphics (dHash)
-//  5. ExtractImageMetadata + AssessLicense — domain + metadata signals
-//  5.5. ReverseCheck — reverse image search for laundered stock (opt-in)
-//  6. LLM Vision classification — fallback for unknown license
+//  5. Placeholder blocklist — reject known hotlink-protection / "image unavailable" graphics (dHash)
+//  6. ExtractImageMetadata + AssessLicense — domain + metadata signals
+//  7. ReverseCheck — reverse image search for laundered stock (opt-in)
+//  8. LLM Vision classification — fallback for unknown license
 func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResults int, mu *sync.Mutex, validated *[]ImageCandidate, dedup *dedupFilter, placeholders *placeholderMatcher) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -69,13 +71,23 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 
 	data, mimeType, img := cfg.downloadForValidation(ctx, cand.ImgURL)
 
-	if img != nil && dedup.isDuplicate(img) {
+	// Hash once, share between dedup and the placeholder blocklist — both
+	// checks need the same image's dHash; graceful degradation (decode or
+	// hash failure) skips both rather than false-rejecting.
+	var hash *goimagehash.ImageHash
+	if img != nil {
+		if h, err := goimagehash.DifferenceHash(img); err == nil {
+			hash = h
+		}
+	}
+
+	if hash != nil && dedup.isDuplicateHash(hash) {
 		slog.Debug("imagefy: dedup rejected", "url", cand.ImgURL)
 		return
 	}
 
-	if img != nil {
-		if matched, source := placeholders.matches(img); matched {
+	if hash != nil {
+		if matched, source := placeholders.matchesHash(hash); matched {
 			slog.Debug("imagefy: placeholder rejected", "url", cand.ImgURL, "source", source)
 			cfg.emitClassification(cand.ImgURL, ClassPlaceholder, 1.0, "phash_blocklist")
 			return
@@ -90,7 +102,7 @@ func (cfg *Config) validateOne(ctx context.Context, cand ImageCandidate, maxResu
 		return
 	}
 
-	// Step 5.5: Reverse image search — detect laundered stock photos.
+	// Step 7: Reverse image search — detect laundered stock photos.
 	reverseResult := cfg.ReverseCheck(ctx, cand.ImgURL)
 	if reverseResult.IsStock {
 		slog.Debug("imagefy: blocked by reverse stock check",

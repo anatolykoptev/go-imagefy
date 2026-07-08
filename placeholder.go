@@ -58,10 +58,27 @@ type placeholderMatcher struct {
 // newPlaceholderMatcher builds a matcher from the embedded default blocklist plus
 // any operator-supplied extra hashes (Config.PlaceholderHashes). extra hashes are
 // labeled "config" in reject logs since they carry no source description.
+//
+// A config hash that exactly duplicates one already in the set (a default, or an
+// earlier entry in extra) is skipped — an operator re-injecting a hash we already
+// block (or a large go-wp-supplied list with repeats) shouldn't grow the
+// per-image Distance-compare cost for no benefit.
 func newPlaceholderMatcher(extra []uint64) *placeholderMatcher {
+	seen := make(map[uint64]bool, len(defaultPlaceholderHashes)+len(extra))
 	entries := make([]placeholderHash, 0, len(defaultPlaceholderHashes)+len(extra))
-	entries = append(entries, defaultPlaceholderHashes...)
+
+	for _, e := range defaultPlaceholderHashes {
+		if seen[e.hash] {
+			continue
+		}
+		seen[e.hash] = true
+		entries = append(entries, e)
+	}
 	for _, h := range extra {
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
 		entries = append(entries, placeholderHash{hash: h, source: "config"})
 	}
 
@@ -84,7 +101,13 @@ func (m *placeholderMatcher) matches(img image.Image) (bool, string) {
 	if err != nil {
 		return false, ""
 	}
+	return m.matchesHash(hash)
+}
 
+// matchesHash is the matches variant for a precomputed hash, so a caller that
+// already needs the image's dHash for another check (e.g. perceptual dedup)
+// doesn't hash the same decoded image twice.
+func (m *placeholderMatcher) matchesHash(hash *goimagehash.ImageHash) (bool, string) {
 	for i, h := range m.hashes {
 		dist, err := hash.Distance(h)
 		if err == nil && dist <= placeholderThreshold {
