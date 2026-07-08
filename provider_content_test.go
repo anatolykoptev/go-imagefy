@@ -222,7 +222,7 @@ func TestContentImageProvider_JSONLDImage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var jsonldIdx, ogIdx int = -1, -1
+	var jsonldIdx, ogIdx = -1, -1
 	for i, r := range results {
 		if r.Title == "jsonld:image" && jsonldIdx == -1 {
 			jsonldIdx = i

@@ -3,6 +3,7 @@ package imagefy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,12 +22,14 @@ const (
 // Supports both official API (with APIKey) and internal API (with SecretKey).
 // When both keys are set, official API is tried first with fallback to internal.
 type PexelsProvider struct {
-	APIKey     string       // official API key (Authorization header)
-	SecretKey  string       // internal API key (Secret-Key header)
-	HTTPClient *http.Client // optional (nil = http.DefaultClient)
-	UserAgent  string       // optional
-	officialBase string     // test override
-	internalBase string     // test override
+	// APIKey is the official API key (Authorization header).
+	//nolint:gosec // G117: config field name, not a hardcoded secret value; renaming would break this exported struct's public API
+	APIKey       string
+	SecretKey    string       // internal API key (Secret-Key header)
+	HTTPClient   *http.Client // optional (nil = http.DefaultClient)
+	UserAgent    string       // optional
+	officialBase string       // test override
+	internalBase string       // test override
 }
 
 // Name returns the provider name.
@@ -60,7 +63,7 @@ func (p *PexelsProvider) Search(ctx context.Context, query string, opts SearchOp
 	if p.APIKey != "" {
 		return p.searchOfficial(ctx, p.officialURL(), query, opts)
 	}
-	return nil, fmt.Errorf("pexels: no API key or secret key configured")
+	return nil, errors.New("pexels: no API key or secret key configured")
 }
 
 type pexelsSrc struct {

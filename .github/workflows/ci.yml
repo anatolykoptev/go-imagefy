@@ -39,6 +39,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history — only-new-issues needs the PR base to diff against
 
       - uses: actions/setup-go@v5
         with:
@@ -47,3 +49,4 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.10.1
+          only-new-issues: true

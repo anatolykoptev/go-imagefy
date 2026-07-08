@@ -107,13 +107,17 @@ func (p *DDGImageProvider) get(ctx context.Context, rawURL string) ([]byte, erro
 		client = http.DefaultClient
 	}
 
-	resp, err := client.Do(req)
+	// G704: rawURL is always ddgBaseURL (hardcoded https://duckduckgo.com) with
+	// query/token passed through url.QueryEscape as query-string values — an
+	// attacker-supplied query can never alter the scheme/host, so there is no
+	// SSRF surface here to guard.
+	resp, err := client.Do(req) //nolint:gosec // G704: fixed host (ddgBaseURL); query/token are escaped query-string values, cannot redirect the request
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, rawURL)
 	}
 

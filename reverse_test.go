@@ -13,13 +13,16 @@ func TestReverseCheck_StockDetected(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/images/reverse" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
-		json.NewEncoder(w).Encode(reverseResponse{
+		err := json.NewEncoder(w).Encode(reverseResponse{
 			IsStock:      true,
 			StockDomains: []string{"shutterstock.com"},
 			Matches: []reverseMatch{
 				{PageURL: "https://shutterstock.com/img/123", Domain: "shutterstock.com"},
 			},
 		})
+		if err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -35,7 +38,9 @@ func TestReverseCheck_StockDetected(t *testing.T) {
 
 func TestReverseCheck_NotStock(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(reverseResponse{IsStock: false})
+		if err := json.NewEncoder(w).Encode(reverseResponse{IsStock: false}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 
@@ -71,7 +76,9 @@ func TestReverseCheck_RequestBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req reverseRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
+			// t.Fatal must run on the test's own goroutine, not this handler's —
+			// use t.Errorf here (matches convention in reverse_hardred_test.go).
+			t.Errorf("decode request: %v", err)
 		}
 		if req.URL != "https://example.com/photo.jpg" {
 			t.Errorf("unexpected url: %s", req.URL)
@@ -79,7 +86,9 @@ func TestReverseCheck_RequestBody(t *testing.T) {
 		if req.MaxResults != reverseMaxResults {
 			t.Errorf("unexpected max_results: %d", req.MaxResults)
 		}
-		json.NewEncoder(w).Encode(reverseResponse{IsStock: false})
+		if err := json.NewEncoder(w).Encode(reverseResponse{IsStock: false}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
 	}))
 	defer srv.Close()
 

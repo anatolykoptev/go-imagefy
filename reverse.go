@@ -18,6 +18,14 @@ const (
 	reverseTimeout    = 10         // seconds
 )
 
+// sanitizeLogValue strips CR/LF from a value before it is written to logs, so
+// an attacker-influenced string (e.g. an image URL harvested from a search
+// provider) cannot forge extra log lines/fields.
+func sanitizeLogValue(s string) string {
+	r := strings.NewReplacer("\r", "", "\n", "")
+	return r.Replace(s)
+}
+
 // ReverseResult holds the outcome of a reverse image search check.
 type ReverseResult struct {
 	IsStock      bool
@@ -72,15 +80,22 @@ func (cfg *Config) ReverseCheck(ctx context.Context, imageURL string) ReverseRes
 		client = http.DefaultClient
 	}
 
-	resp, err := client.Do(req)
+	// G704: endpoint is built from cfg.OxBrowserURL, a deploy-time internal
+	// service address (operator config, not request-tainted). imageURL never
+	// appears in the URL — only in the JSON POST body — so there is no
+	// attacker-controlled host/path here to guard.
+	resp, err := client.Do(req) //nolint:gosec // G704: endpoint derived from cfg.OxBrowserURL (deploy-time config); imageURL is body-only, never part of the URL
 	if err != nil {
-		slog.Debug("imagefy: reverse check failed", "url", imageURL, "error", err)
+		slog.Debug("imagefy: reverse check failed", "url", sanitizeLogValue(imageURL), "error", err)
 		return ReverseResult{}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		slog.Debug("imagefy: reverse check bad status", "url", imageURL, "status", resp.StatusCode)
+		// G706: imageURL is already run through sanitizeLogValue (line 24) which
+		// strips CR/LF before this call — gosec's taint tracker doesn't credit
+		// custom sanitizer functions, so it still flags the tainted source var.
+		slog.Debug("imagefy: reverse check bad status", "url", sanitizeLogValue(imageURL), "status", resp.StatusCode) //nolint:gosec // G706: value passed through sanitizeLogValue above, CR/LF already stripped
 		return ReverseResult{}
 	}
 
@@ -91,13 +106,13 @@ func (cfg *Config) ReverseCheck(ctx context.Context, imageURL string) ReverseRes
 
 	var result reverseResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		slog.Debug("imagefy: reverse check parse error", "url", imageURL, "error", err)
+		slog.Debug("imagefy: reverse check parse error", "url", sanitizeLogValue(imageURL), "error", err)
 		return ReverseResult{}
 	}
 
 	if result.IsStock {
 		slog.Debug("imagefy: reverse search detected stock",
-			"url", imageURL,
+			"url", sanitizeLogValue(imageURL),
 			"stock_domains", fmt.Sprintf("%v", result.StockDomains),
 		)
 	}
