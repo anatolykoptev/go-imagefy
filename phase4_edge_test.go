@@ -403,7 +403,7 @@ func TestPhase4Edge_CheckLicenseWith_EmptyStringsInExtraBlocked(t *testing.T) {
 	got := CheckLicenseWith(
 		"https://www.example.com/photo.jpg",
 		"",
-		[]string{""},  // empty string in blocked list
+		[]string{""}, // empty string in blocked list
 		nil,
 	)
 	if got != LicenseUnknown {
@@ -454,10 +454,10 @@ func TestPhase4Edge_CheckLicenseWith_SubstringOfBuiltinDomain(t *testing.T) {
 			want:         LicenseBlocked,
 		},
 		{
-			name:         "extra 'splash' matches inside unsplash.com",
-			imageURL:     "https://images.unsplash.com/photo.jpg",
-			extraSafe:    []string{"splash"},
-			want:         LicenseSafe, // already safe via built-in
+			name:      "extra 'splash' matches inside unsplash.com",
+			imageURL:  "https://images.unsplash.com/photo.jpg",
+			extraSafe: []string{"splash"},
+			want:      LicenseSafe, // already safe via built-in
 		},
 	}
 

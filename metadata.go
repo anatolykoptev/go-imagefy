@@ -185,4 +185,3 @@ func ExtractImageMetadata(data []byte) *ImageMetadata {
 
 	return meta
 }
-

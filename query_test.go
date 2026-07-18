@@ -70,9 +70,9 @@ func TestBuildImageQuery(t *testing.T) {
 			wantFull: "",
 		},
 		{
-			name:     "city comparison is case-insensitive",
-			title:    "Выставка современного искусства москва",
-			city:     "Москва",
+			name:  "city comparison is case-insensitive",
+			title: "Выставка современного искусства москва",
+			city:  "Москва",
 			// "москва" (lower) contains "москва" (lower of city), so city must NOT be appended again
 			excludes: []string{"Москва"},
 		},

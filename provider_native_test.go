@@ -5,8 +5,8 @@ import (
 	"io"
 	"testing"
 
-	imagefy "github.com/anatolykoptev/go-imagefy"
 	"github.com/anatolykoptev/go-engine/imagesearch"
+	imagefy "github.com/anatolykoptev/go-imagefy"
 )
 
 type fakeNativeDoer struct{}
