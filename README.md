@@ -18,6 +18,8 @@ A Go library for editorial image search, validation, and classification. Finds f
 - **Image download** with stealth client fallback for anti-bot protection.
 - **Search query builder** — extracts meaningful words from titles, strips Russian stop words.
 - **OG image extraction** from HTML pages.
+- **Deterministic reject gates** — a perceptual-hash blocklist of known placeholder images and a flat/non-photographic image gate run before any LLM call; `ScreenImage` / `ScreenImageURL` expose the gate for a single image.
+- **Reverse stock check** — `ReverseCheck` asks an ox-browser service (`Config.OxBrowserURL`) whether an image appears on stock sites; it is skipped when the URL is empty.
 - **Dependency injection** — bring your own cache, classifier, and HTTP clients.
 
 ## Installation
@@ -26,7 +28,7 @@ A Go library for editorial image search, validation, and classification. Finds f
 go get github.com/anatolykoptev/go-imagefy@latest
 ```
 
-Requires Go 1.24+.
+Requires Go 1.26 or newer (see `go.mod`).
 
 ## Quick Start
 
@@ -149,7 +151,10 @@ Layer 2 (orchestration, uses interfaces)
 ├── provider.go       — SearchProvider interface, SearXNGProvider
 ├── openverse.go      — OpenverseProvider (Openverse API)
 ├── pexels.go         — PexelsProvider (Pexels API)
-├── provider_ox.go    — OxBrowserProvider (ox-browser REST)
+├── provider_content.go — ContentImageProvider (real content image from a page)
+├── provider_native.go  — NativeImageProvider (go-engine image search engines, in-process)
+├── screen.go, flatimage.go, placeholder.go — ScreenImage, flat-image and placeholder reject gates
+├── reverse.go        — ReverseCheck (reverse stock-image lookup)
 ├── provider_og.go    — OGImageProvider (og:image extraction)
 ├── provider_ddg.go   — DDGImageProvider (DuckDuckGo direct)
 └── orchestrator.go   — FallbackProvider (sequential fallback)
@@ -265,9 +270,10 @@ type SearchOpts struct {
 
 | Provider | Source | License | API Key |
 |----------|--------|---------|---------|
-| `OxBrowserProvider` | ox-browser Rust service (Bing+DDG+Yandex with CF bypass) | Mixed | No |
+| `NativeImageProvider` | go-engine image search engines (Bing, Brave, DDG, Google, Yandex) run in-process | Mixed | No |
+| `ContentImageProvider` | Picks the real content image from a source page, skipping icons and placeholders | Unknown | No |
 | `OpenverseProvider` | WordPress Openverse (842M+ images) | CC / Public Domain only | No |
-| `PexelsProvider` | Pexels stock photos | Pexels License (free) | Yes (`PEXELS_API_KEY`) |
+| `PexelsProvider` | Pexels stock photos | Pexels License (free) | Yes (`APIKey` field) |
 | `OGImageProvider` | Extracts og:image from source page HTML | Unknown | No |
 | `DDGImageProvider` | DuckDuckGo direct (fallback) | Mixed | No |
 | `SearXNGProvider` | Self-hosted SearXNG meta-search (legacy) | Mixed | No |
@@ -330,8 +336,14 @@ make lint     # golangci-lint run ./...
 make build    # go build ./...
 ```
 
-CI runs on Go 1.24 and 1.25 with golangci-lint v2.
+CI runs the tests on Go 1.24 and 1.25 and golangci-lint v2.10.1. See [CONTRIBUTING.md](CONTRIBUTING.md);
+coding agents start at [CLAUDE.md](CLAUDE.md). Every document is listed in [docs/INDEX.md](docs/INDEX.md).
+
+## Status
+
+Pre-1.0 (`v0.x` tags, latest `v0.13.0`); the API can still change between minor versions. Releases are
+hand-tagged and [CHANGELOG.md](CHANGELOG.md) is kept by hand.
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).
