@@ -55,14 +55,14 @@
 **Goal:** Replace Go-based scrapers with ox-browser Rust backend for image search,
 add parallel provider execution and orchestration.
 
-- [x] **OxBrowserProvider** — `SearchProvider` that calls ox-browser `POST /images/search` REST endpoint. Delegates Bing + DDG scraping to Rust with wreq+BoringSSL TLS fingerprint, proxy rotation, CF bypass. 8 tests.
+- [x] **OxBrowserProvider** — `SearchProvider` that calls ox-browser `POST /images/search` REST endpoint. Delegates Bing + DDG fetching to Rust with wreq+BoringSSL TLS fingerprint, proxy rotation, CF bypass. 8 tests.
 - [x] **Parallel gatherCandidates** — replaced sequential provider loop with `sync.WaitGroup` + goroutine-per-provider.
 - [x] **FallbackProvider** — orchestrator that tries providers in order until one succeeds. 6 tests.
 - [x] **Connect PexelsProvider** — wired in go-wp imageadapter via `PEXELS_API_KEY` env var.
 - [x] **DDGImageProvider** — available as fallback provider, but removed from go-wp's provider chain (ox-browser already searches DDG).
 
 **Architecture:**
-- ox-browser (Rust) handles all scraping: TLS fingerprint, anti-bot, proxy rotation, CF bypass, HTML/JSON parsing
+- ox-browser (Rust) handles all page fetching: TLS fingerprint, anti-bot, proxy rotation, CF bypass, HTML/JSON parsing
 - go-imagefy handles validation: license check, perceptual dedup, metadata extraction, LLM classification
 - Clean separation: Rust scrapes, Go validates
 
@@ -144,7 +144,7 @@ Key library: [`bep/imagemeta`](https://github.com/bep/imagemeta) (pure Go, EXIF+
 
 ## Content Automation Track (NEW, 2026-04-23)
 
-Cross-cutting from [~/docs/content-automation/ROADMAP.md](/home/krolik/docs/content-automation/ROADMAP.md).
+Cross-cutting from `~/docs/content-automation/ROADMAP.md`.
 
 **Context**: go-imagefy finds and validates existing images. **Image generation не существует ни в одном репо.** Для piter.now + hully.day, где каждый пост нуждается в hero-image, это пробел — сегодня либо og:image источника, либо Unsplash/Pexels, либо ничего.
 
@@ -173,4 +173,4 @@ Cross-cutting from [~/docs/content-automation/ROADMAP.md](/home/krolik/docs/cont
 - [ ] `License` field on generated images = `"ai-generated"` с соответствующим disclosure в alt-text
 - [ ] C2PA metadata extraction от Imagen outputs (Gemini Imagen 3 is C2PA-aware) — mark as safe even though AI
 
-See: [~/docs/content-automation/phases/phase-4-imagen-consolidation.md](/home/krolik/docs/content-automation/phases/phase-4-imagen-consolidation.md)
+See: `~/docs/content-automation/phases/phase-4-imagen-consolidation.md`
