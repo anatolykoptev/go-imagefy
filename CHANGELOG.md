@@ -7,6 +7,7 @@ summarised from the tags.
 ## [Unreleased]
 
 ### Changed
+- Licence changed from MIT to Apache-2.0 from this version on.
 - Docs-only pull requests skip the heavy CI jobs.
 - Repository documents brought up to the fleet standard.
 

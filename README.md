@@ -346,4 +346,4 @@ hand-tagged and [CHANGELOG.md](CHANGELOG.md) is kept by hand.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](LICENSE).
