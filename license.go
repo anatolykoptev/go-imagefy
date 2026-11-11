@@ -45,13 +45,13 @@ var BlockedDomains = []string{
 	"superstock",
 	"agefotostock",
 	"colourbox",
-	"photodune",   // Envato marketplace
+	"photodune", // Envato marketplace
 	"yayimages",
 	"vectorstock",
-	"loriimages",  // Russian stock (Лори)
-	"fotobank",    // Russian stock
-	"freepik",     // active DMCA enforcement
-	"canva.",      // freemium stock elements (trailing dot avoids matching "canvas")
+	"loriimages", // Russian stock (Лори)
+	"fotobank",   // Russian stock
+	"freepik",    // active DMCA enforcement
+	"canva.",     // freemium stock elements (trailing dot avoids matching "canvas")
 	"clipartof",
 	"featurepics",
 	"rfclipart",

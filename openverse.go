@@ -18,13 +18,13 @@ const (
 
 // openverseResult is the JSON shape of a single Openverse image result.
 type openverseResult struct {
-	ID                 string `json:"id"`
-	Title              string `json:"title"`
-	URL                string `json:"url"`
-	Thumbnail          string `json:"thumbnail"`
-	ForeignLandingURL  string `json:"foreign_landing_url"`
-	Source             string `json:"source"`
-	License            string `json:"license"`
+	ID                string `json:"id"`
+	Title             string `json:"title"`
+	URL               string `json:"url"`
+	Thumbnail         string `json:"thumbnail"`
+	ForeignLandingURL string `json:"foreign_landing_url"`
+	Source            string `json:"source"`
+	License           string `json:"license"`
 }
 
 // OpenverseProvider searches openly-licensed images via the Openverse API.

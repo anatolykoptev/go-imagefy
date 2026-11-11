@@ -83,9 +83,9 @@ func TestDedupFilter_ThreeDistinctImagesAllAccepted(t *testing.T) {
 
 	// Three structurally distinct images.
 	imgs := []image.Image{
-		makeGradientImage(100, 100, 0),    // black→white gradient
-		makeCheckerImage(100, 100, 10),    // 10px checker
-		makeCheckerImage(100, 100, 2),     // 2px checker (different frequency)
+		makeGradientImage(100, 100, 0), // black→white gradient
+		makeCheckerImage(100, 100, 10), // 10px checker
+		makeCheckerImage(100, 100, 2),  // 2px checker (different frequency)
 	}
 
 	for i, img := range imgs {

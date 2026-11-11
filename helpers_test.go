@@ -9,9 +9,9 @@ func TestExtractOGImageURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		html     string
-		want     string
+		name string
+		html string
+		want string
 	}{
 		{
 			name: "property-first order",

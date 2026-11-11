@@ -54,7 +54,6 @@ func TestParseVisionResponse(t *testing.T) {
 	}
 }
 
-
 // mockClassifier is a test double for the Classifier interface.
 type mockClassifier struct {
 	response string
@@ -69,7 +68,7 @@ func (m *mockClassifier) Classify(_ context.Context, _ string, _ []ImageInput) (
 
 // promptCapturingClassifier records the prompt passed to Classify.
 type promptCapturingClassifier struct {
-	response      string
+	response       string
 	capturedPrompt string
 }
 
@@ -191,10 +190,10 @@ func TestParseClassificationResult(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		resp       string
-		wantClass  string
-		wantConf   float64
+		name      string
+		resp      string
+		wantClass string
+		wantConf  float64
 	}{
 		// All 6 classes with confidence.
 		{name: "PHOTO with confidence", resp: "PHOTO 0.95", wantClass: "PHOTO", wantConf: 0.95},
@@ -411,7 +410,7 @@ func TestIsRealPhoto_NewClasses(t *testing.T) {
 		want bool
 	}{
 		{"PHOTO", true},
-		{"", true},        // error/unknown → graceful accept
+		{"", true}, // error/unknown → graceful accept
 		{"STOCK", false},
 		{"REJECT", false},
 		{"SCREENSHOT", false},
