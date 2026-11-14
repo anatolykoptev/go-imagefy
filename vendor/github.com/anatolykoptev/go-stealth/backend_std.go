@@ -1,8 +1,9 @@
 package stealth
 
 import (
+	"crypto/tls"
 	"fmt"
-	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -15,13 +16,31 @@ import (
 type stdDoer struct {
 	client *http.Client
 	jar    http.CookieJar
+
+	// maxBody bounds the decoded response body (0 = unbounded); see
+	// BackendConfig.MaxBodyBytes.
+	maxBody int64
 }
 
 // newStdBackend creates an HTTPDoer backed by standard net/http.
 func newStdBackend(cfg BackendConfig) (HTTPDoer, error) {
-	jar, _ := cookiejar.New(nil)
+	jar := cfg.CookieJar
+	if jar == nil {
+		jar, _ = cookiejar.New(nil)
+	}
 
 	transport := &http.Transport{}
+	if cfg.InsecureSkipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	if cfg.DialControl != nil {
+		// Connect-time SSRF guard on the resolved address (rebind-proof).
+		transport.DialContext = (&net.Dialer{
+			Control:   adaptControl(cfg.DialControl),
+			Timeout:   30 * time.Second, //nolint:mnd // net/http default dial timeout
+			KeepAlive: 30 * time.Second, //nolint:mnd // net/http default keepalive
+		}).DialContext
+	}
 	if cfg.ProxyURL != "" {
 		proxyURL, err := url.Parse(cfg.ProxyURL)
 		if err != nil {
@@ -35,13 +54,18 @@ func newStdBackend(cfg BackendConfig) (HTTPDoer, error) {
 		Transport: transport,
 		Timeout:   time.Duration(cfg.TimeoutSeconds) * time.Second,
 	}
-	if !cfg.FollowRedirects {
+	switch {
+	case !cfg.FollowRedirects:
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
+	case cfg.RedirectGuard != nil:
+		// Per-hop SSRF guard. The closure re-owns the redirect hop cap that
+		// overriding CheckRedirect drops from net/http.
+		client.CheckRedirect = cfg.RedirectGuard
 	}
 
-	return &stdDoer{client: client, jar: jar}, nil
+	return &stdDoer{client: client, jar: jar, maxBody: cfg.MaxBodyBytes}, nil
 }
 
 func (s *stdDoer) Do(req *Request) (*Response, error) {
@@ -61,7 +85,9 @@ func (s *stdDoer) Do(req *Request) (*Response, error) {
 	}
 	defer resp.Body.Close()
 
-	rawData, err := io.ReadAll(resp.Body)
+	// Closing an unread body (deferred above) drops the connection instead of
+	// draining it, so an oversized body stops costing bytes at the limit.
+	rawData, err := readAllLimit(resp.Body, wireLimit(s.maxBody, resp.Header.Get("Content-Encoding")))
 	if err != nil {
 		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("read body: %w", err)
 	}
@@ -70,18 +96,33 @@ func (s *stdDoer) Do(req *Request) (*Response, error) {
 	for k, v := range resp.Header {
 		lk := strings.ToLower(k)
 		if lk == "set-cookie" {
-			respHeaders["set-cookie"] = strings.Join(v, "; ")
+			respHeaders["set-cookie"] = strings.Join(v, "\n")
 		} else if len(v) > 0 {
 			respHeaders[lk] = v[0]
 		}
 	}
 
-	data, err := decompressBody(rawData, respHeaders["content-encoding"])
+	data, err := decodeBody(rawData, respHeaders["content-encoding"], s.maxBody)
 	if err != nil {
 		return &Response{StatusCode: resp.StatusCode}, fmt.Errorf("decompress body: %w", err)
 	}
 
 	return &Response{Body: data, Headers: respHeaders, StatusCode: resp.StatusCode}, nil
+}
+
+// Close releases the transport's idle connections. newStdBackend's transport
+// has no idle timeout, so without this a discarded client keeps them open
+// indefinitely. A connection serving a request is left to finish; a Do after
+// Close opens new connections that nothing closes; Close must not run
+// concurrently with Do.
+func (s *stdDoer) Close() error {
+	s.client.CloseIdleConnections()
+	return nil
+}
+
+// CloseIdleConnections closes the transport's idle connections only.
+func (s *stdDoer) CloseIdleConnections() {
+	s.client.CloseIdleConnections()
 }
 
 func (s *stdDoer) SetProxy(proxyURL string) error {

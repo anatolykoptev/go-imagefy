@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	http "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/websocket"
 )
 
@@ -20,7 +21,7 @@ type Websocket struct {
 //
 //	// Create HTTP client with ForceHttp1 (required for WebSocket!)
 //	client, _ := NewHttpClient(nil,
-//	    WithClientProfile(profiles.Chrome_133),
+//	    WithClientProfile(profiles.Chrome_150),
 //	    WithForceHttp1(),
 //	)
 //
@@ -56,6 +57,7 @@ func NewWebsocket(logger Logger, options ...WebsocketOption) (*Websocket, error)
 		WriteBufferSize:   config.writeBufferSize,
 		NetDialTLSContext: config.tlsClient.GetTLSDialer(),
 		NetDialContext:    config.tlsClient.GetDialer().DialContext,
+		EnableCompression: config.enableCompression,
 	}
 
 	return &Websocket{
@@ -65,6 +67,12 @@ func NewWebsocket(logger Logger, options ...WebsocketOption) (*Websocket, error)
 }
 
 func (w *Websocket) Connect(ctx context.Context) (*websocket.Conn, error) {
+	if w.config.headers != nil {
+		if _, ok := w.config.headers[http.HeaderOrderKey]; ok {
+			w.config.headers[http.HeaderOrderKey] = allToLower(w.config.headers[http.HeaderOrderKey])
+		}
+	}
+
 	c, _, err := w.dialer.DialContext(ctx, w.config.url, w.config.headers)
 	if err != nil {
 		return nil, err
