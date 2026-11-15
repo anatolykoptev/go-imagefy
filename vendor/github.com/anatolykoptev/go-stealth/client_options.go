@@ -1,28 +1,62 @@
 package stealth
 
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+)
+
 // ClientOption configures a BrowserClient.
 type ClientOption func(*clientConfig)
 
 type clientConfig struct {
-	proxyURL       string
-	proxyPool      ProxyPoolProvider
-	profile        TLSProfile
-	timeout        int
-	headerOrder    []string
-	followRedirs   bool
-	debug          bool
-	backend        BackendFactory
-	http3          bool
-	blockRetries   int
-	cookieProvider CookieProvider
-	oxBrowserURL   string
-	buildErrors    []error // deferred errors from option constructors
+	proxyURL           string
+	proxyPool          ProxyPoolProvider
+	poolCloser         io.Closer // set only when an option created the pool itself (client-owned; caller-supplied pools are never closed)
+	profile            TLSProfile
+	identity           *BrowserIdentity
+	timeout            int
+	headerOrder        []string
+	followRedirs       bool
+	debug              bool
+	backend            BackendFactory
+	callerBackend      bool                 // true when backend came from WithBackend: the caller owns that doer and Close leaves it alone
+	newHTTPClient      tlsHTTPClientFactory // test seam, per client; nil = tls_client.NewHttpClient
+	http3              bool
+	fetchMode          bool
+	insecureSkipVerify bool
+	cookieJar          http.CookieJar // WithCookieJar; nil = backend default jar
+	maxBodyBytes       int64          // WithMaxBodyBytes; 0 = unbounded
+	blockRetries       int
+	cookieProvider     CookieProvider
+	oxBrowserURL       string
+	buildErrors        []error // deferred errors from option constructors
+
+	// SSRF guards. Populated by defaultConfig() with the stdlib default-deny
+	// closures so a zero-option client is fail-closed BY CONSTRUCTION. Each is
+	// independently overridable (WithDialControl / WithRedirectGuard /
+	// WithRequestURLGuard) or cleared as a set (WithoutSSRFGuard, tests only).
+	dialControl     func(network, address string) error
+	redirectGuard   func(req *http.Request, via []*http.Request) error
+	requestURLGuard func(ctx context.Context, u *url.URL) error
 }
 
 func defaultConfig() *clientConfig {
 	return &clientConfig{
-		profile: ProfileChrome131,
-		timeout: 20,
+		// The default is the newest Chrome profile whose fingerprint has been
+		// measured against the real browser (chrome_156). A
+		// consumer that calls NewClient() with no WithProfile and pairs the
+		// default JA3 with its own hardcoded User-Agent must take the UA from
+		// Identity().UserAgent (or UserAgentForProfile) instead, or it will
+		// present an old Chrome UA over this newer fingerprint.
+		profile:         ProfileChrome156,
+		timeout:         20,
+		dialControl:     defaultDenyDial,
+		redirectGuard:   defaultDenyRedirect,
+		requestURLGuard: defaultDenyURL,
 	}
 }
 
@@ -33,10 +67,91 @@ func WithProxy(url string) ClientOption {
 	}
 }
 
-// WithProfile sets the TLS client profile for fingerprint impersonation.
+// WithProfile sets the TLS client profile for fingerprint impersonation. The
+// zero value "" means "no preference" and keeps the default profile; a
+// non-empty name with no backend mapping makes NewClient fail with
+// ErrUnknownTLSProfile.
 func WithProfile(p TLSProfile) ClientOption {
 	return func(c *clientConfig) {
+		if p == "" {
+			return
+		}
 		c.profile = p
+	}
+}
+
+// WithIdentity sets the browser identity — TLS profile and User-Agent (plus
+// Client Hints) — together, so they can never be configured apart and drift.
+// The identity's TLSProfile is installed as the backend's fingerprint, and
+// Identity() returns the supplied identity verbatim. If ClientHints is nil
+// for a Chromium UA, it is derived from the User-Agent via ClientHintsHeaders
+// so the identity the client reports is always complete.
+//
+// WithIdentity and WithProfile may both be passed; WithIdentity wins for the
+// profile (it sets c.profile too) and supplies the UA, which WithProfile
+// alone cannot do. Use WithIdentity when the caller already holds a
+// BrowserProfile from RandomProfile/PlatformMatchedProfile and wants the
+// client's reported identity to match exactly.
+func WithIdentity(id BrowserIdentity) ClientOption {
+	return func(c *clientConfig) {
+		if id.ClientHints == nil {
+			id.ClientHints = ClientHintsHeaders(id.UserAgent)
+		}
+		c.identity = &id
+		if id.TLSProfile != "" {
+			c.profile = id.TLSProfile
+		}
+	}
+}
+
+// WithFetchMode makes the client behave like a Chrome page issuing fetch()
+// and XMLHttpRequest calls rather than top-level navigations (the default).
+// Two things change, and both match what Chrome sends for such requests:
+//
+//   - HTTP/2: the HEADERS frame carries exclusive priority weight 220
+//     instead of the navigation weight 256.
+//   - Headers: a request without its own "priority" header gets
+//     "priority: u=1, i". A priority header the caller sets is kept as is.
+//
+// The mode belongs to the whole client because HTTP/2 priority is a property
+// of the connection's transport, not of a single request; a caller that
+// mixes navigations and fetches builds one client of each (they then use
+// separate connections, which Chrome does not). The cookie jar is per client.
+//
+// It needs a Chrome-family TLS profile (chrome_*, brave_*) and a Chromium
+// identity (chrome, edge, brave); on Firefox or Safari, or an identity that
+// names one of them, NewClient returns ErrFetchModeUnsupported rather than
+// present a Chrome request shape over another browser's fingerprint. It is opt-in for every
+// profile, chrome_131 included: without it the wire is unchanged. With
+// WithStdHTTP only the header part applies (net/http cannot set a priority).
+func WithFetchMode() ClientOption {
+	return func(c *clientConfig) {
+		c.fetchMode = true
+	}
+}
+
+// WithCookieJar makes the client store and send cookies through jar instead of
+// its own private jar. Pass the same jar to several clients to share one
+// cookie store, as the tabs and workers of one browser do: a cookie set by a
+// response to one client is sent by the next request of another.
+//
+// The jar decides everything about a cookie: which domain and path it is
+// scoped to, expiry and deletion (a cookie set with MaxAge < 0 is removed),
+// and the order cookies are sent in. net/http/cookiejar orders them as RFC 6265
+// does and as Chrome does: longer path first, then earliest creation, so
+// cookies from one response keep their Set-Cookie order. The caller can seed,
+// read or delete cookies by calling the jar directly, which lets it drop an
+// explicit Cookie header (a Cookie header set on a request is sent in addition
+// to the jar's cookies, so a cookie in both is sent twice).
+//
+// The jar must be safe for concurrent use (net/http/cookiejar is). A nil jar
+// keeps the default per-client jar. The tls-client default jar is not changed:
+// it keys cookies by the last two host labels, ignores Domain and Path, and
+// returns one response's cookies in reverse Set-Cookie order. Works with both
+// backends and does not touch the TLS or HTTP/2 wire.
+func WithCookieJar(jar http.CookieJar) ClientOption {
+	return func(c *clientConfig) {
+		c.cookieJar = jar
 	}
 }
 
@@ -44,6 +159,35 @@ func WithProfile(p TLSProfile) ClientOption {
 func WithTimeout(seconds int) ClientOption {
 	return func(c *clientConfig) {
 		c.timeout = seconds
+	}
+}
+
+// WithMaxBodyBytes bounds the response body Do returns to n bytes, measured
+// after content-decoding (gzip, deflate, zstd). Reading stops at n+1 bytes:
+// a larger body is neither buffered nor drained, the connection is closed, and
+// Do returns an error that satisfies errors.Is(err, ErrBodyTooLarge). A
+// highly compressed body is stopped while it is being decoded, so a small
+// payload cannot expand past n. A body of exactly n bytes is returned whole.
+//
+// The limit covers every request the client makes: Do, DoCtx,
+// DoWithHeaderOrder, RoundTrip, each redirect hop's final response, and a
+// body replaced by the ox-browser fallback. The error is never retried on
+// another proxy. A backend from WithBackend is handed the limit in
+// BackendConfig.MaxBodyBytes and must enforce it itself, for example by
+// reading its body with ReadBodyLimit: the client's check on the finished
+// body only rejects it, it cannot prevent a backend that ignores the limit
+// from allocating the whole body first.
+//
+// n must be positive; NewClient returns an error otherwise. Without this
+// option the body is read in full, as before.
+func WithMaxBodyBytes(n int64) ClientOption {
+	return func(c *clientConfig) {
+		if n <= 0 {
+			c.buildErrors = append(c.buildErrors,
+				fmt.Errorf("stealth: WithMaxBodyBytes: limit must be positive, got %d", n))
+			return
+		}
+		c.maxBodyBytes = n
 	}
 }
 
@@ -79,9 +223,12 @@ func WithProxyPool(pool ProxyPoolProvider) ClientOption {
 
 // WithBackend sets a custom backend factory for creating the HTTPDoer.
 // If not set, the default bogdanfinn/tls-client backend is used.
+// The backend owns reading the response body, so it must honour
+// BackendConfig.MaxBodyBytes (WithMaxBodyBytes) itself; see ReadBodyLimit.
 func WithBackend(factory BackendFactory) ClientOption {
 	return func(c *clientConfig) {
 		c.backend = factory
+		c.callerBackend = factory != nil // nil factory = client builds the default backend
 	}
 }
 
@@ -97,6 +244,17 @@ func WithStdHTTP() ClientOption {
 func WithHTTP3() ClientOption {
 	return func(c *clientConfig) {
 		c.http3 = true
+	}
+}
+
+// WithInsecureSkipVerify disables TLS certificate verification.
+// WARNING: this makes connections vulnerable to man-in-the-middle attacks.
+// Use only for local testing (httptest.NewTLSServer) or explicit MITM proxy
+// inspection. Never use in production against public endpoints.
+func WithInsecureSkipVerify() ClientOption {
+	return func(c *clientConfig) {
+		c.insecureSkipVerify = true
+		slog.Warn("TLS certificate verification DISABLED via WithInsecureSkipVerify(). Connections are vulnerable to MITM attacks. Use only for self-signed certs in development.")
 	}
 }
 
@@ -123,8 +281,135 @@ func WithCookieSolver(provider CookieProvider) ClientOption {
 // If no CookieProvider is already set, adds OxBrowserSolver + CloudflareDetectMiddleware.
 // Always adds SmartFetchMiddleware as a fallback for CF-challenged responses.
 // url is the ox-browser base URL (e.g. "http://127.0.0.1:8901").
+// Calls to ox-browser carry X-Internal-Secret from INTERNAL_SERVICE_SECRET
+// when set — unless a proxy pool routes them through an external proxy, where
+// the header would transit the proxy and is not sent.
 func WithOxBrowser(url string) ClientOption {
 	return func(c *clientConfig) {
 		c.oxBrowserURL = url
+	}
+}
+
+// WithDialControl overrides the connect-time (tier-1) SSRF guard: the
+// rebind-proof check run on the already-resolved address immediately before
+// connect(2), on both backends' dialers. Pass go-kit/httputil's SSRFGuards()
+// dial closure (or DenyBlockedAddress) here for the framework's full policy.
+// A nil fn disables the connect-time guard.
+//
+// On a PROXIED client this hook sees only the proxy's address, never the real
+// target — pair it with WithRequestURLGuard (tier 3), which does. The client
+// passes the configured proxy's own endpoint (its resolved addresses and port,
+// following SetProxy) without consulting fn, so a proxy on a private address
+// stays reachable; every other address still goes through fn. The consequence:
+// a stricter caller guard is bypassed for those proxy endpoints (every proxy
+// set on this client recently, at most the last 64 distinct URLs), because
+// they are operator configuration.
+func WithDialControl(fn func(network, address string) error) ClientOption {
+	return func(c *clientConfig) {
+		c.dialControl = tagGuardErr2(fn)
+	}
+}
+
+// tagGuardErr2 / tagGuardErrReq / tagGuardErrURL wrap a caller-supplied guard
+// so any non-nil error it returns also satisfies errors.Is(err, ErrSSRFBlocked)
+// (the caller's error chain is preserved via %w). This is what makes a guard
+// REJECTION non-retryable in doWithRetry, which short-circuits on
+// ErrSSRFBlocked: without it, a consumer wiring go-kit/httputil's CheckURL /
+// SSRFGuards() (whose errors do NOT wrap this package's sentinel) would have a
+// blocked target pointlessly retried against every proxy before failing. The
+// built-in default guards already return ErrSSRFBlocked directly, so only the
+// caller-supplied (With*) path needs tagging. A guard rejection is treated as
+// non-retryable even when it stems from a target-resolve failure — retrying
+// through a different proxy cannot change the target host's DNS answer.
+func tagGuardErr2(fn func(network, address string) error) func(network, address string) error {
+	if fn == nil {
+		return nil
+	}
+	return func(network, address string) error {
+		if err := fn(network, address); err != nil {
+			return fmt.Errorf("%w: %w", ErrSSRFBlocked, err)
+		}
+		return nil
+	}
+}
+
+// WithRedirectGuard overrides the per-hop (tier-2) SSRF guard: a
+// CheckRedirect-shaped closure run on every redirect hop the backend follows
+// (only relevant with WithFollowRedirects). It MUST re-own a hop cap — a
+// custom CheckRedirect replaces net/http's built-in 10-hop limit. Pass
+// go-kit/httputil's SSRFGuards() redirect closure here. A nil fn disables the
+// per-hop guard (the backend then falls back to its built-in redirect cap).
+//
+// On the std backend, req and via are the exact *http.Request values
+// net/http's own redirect loop uses (Body/Cancel/ctx and all). On the tls
+// backend, req and via are adapted from bogdanfinn/fhttp's redirect chain:
+// Method, URL, and Header are populated faithfully hop-by-hop (fhttp builds
+// its own via chain from real prior requests, same shape as net/http's), but
+// Body/GetBody/Cancel/Context and any other *http.Request field are left at
+// their zero value — a guard that needs only len(via)/via[i].URL/via[i].Host
+// (the go-kit SSRFGuards() shape) works unchanged on both backends; a guard
+// reading Body or Context should not assume either backend populates them.
+func WithRedirectGuard(fn func(req *http.Request, via []*http.Request) error) ClientOption {
+	return func(c *clientConfig) {
+		c.redirectGuard = tagGuardErrReq(fn)
+	}
+}
+
+// tagGuardErrReq is tagGuardErr2 for the redirect-guard signature. net/http
+// wraps a CheckRedirect error in a *url.Error, whose Unwrap chain errors.Is
+// still traverses to ErrSSRFBlocked.
+func tagGuardErrReq(fn func(req *http.Request, via []*http.Request) error) func(req *http.Request, via []*http.Request) error {
+	if fn == nil {
+		return nil
+	}
+	return func(req *http.Request, via []*http.Request) error {
+		if err := fn(req, via); err != nil {
+			return fmt.Errorf("%w: %w", ErrSSRFBlocked, err)
+		}
+		return nil
+	}
+}
+
+// WithRequestURLGuard overrides the pre-request (tier-3) SSRF guard: a check
+// on the INITIAL target URL, evaluated before the (possibly proxied) fetch.
+// This is the ONLY tier that guards a proxied fetch's initial target, since a
+// proxied dial control (tier 1) sees only the proxy. Signature matches
+// go-kit/httputil.CheckURL, so a consumer can wire it directly. A nil fn
+// disables the pre-request guard.
+func WithRequestURLGuard(fn func(ctx context.Context, u *url.URL) error) ClientOption {
+	return func(c *clientConfig) {
+		c.requestURLGuard = tagGuardErrURL(fn)
+	}
+}
+
+// tagGuardErrURL is tagGuardErr2 for the pre-request-guard signature. This is
+// the load-bearing one for a PROXIED client (the only tier that sees the real
+// target): baseHandler runs it inside the doWithRetry loop, so an untagged
+// go-kit CheckURL rejection would otherwise be retried against every proxy.
+func tagGuardErrURL(fn func(ctx context.Context, u *url.URL) error) func(ctx context.Context, u *url.URL) error {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, u *url.URL) error {
+		if err := fn(ctx, u); err != nil {
+			return fmt.Errorf("%w: %w", ErrSSRFBlocked, err)
+		}
+		return nil
+	}
+}
+
+// WithoutSSRFGuard clears all three SSRF guard tiers (dial, redirect,
+// pre-request), restoring the pre-guard byte-for-byte behavior.
+//
+// FOR TESTS ONLY. A BrowserClient is fail-closed by construction — its
+// built-in stdlib default-deny refuses loopback/private/link-local targets,
+// which is exactly what an httptest (127.0.0.1) suite needs to opt out of.
+// Never call this from production code; the fleet fitness function forbids it
+// outside _test.go.
+func WithoutSSRFGuard() ClientOption {
+	return func(c *clientConfig) {
+		c.dialControl = nil
+		c.redirectGuard = nil
+		c.requestURLGuard = nil
 	}
 }

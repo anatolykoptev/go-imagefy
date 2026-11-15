@@ -1,23 +1,73 @@
 package stealth
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"strings"
+	"sync"
 	"time"
+
+	"github.com/anatolykoptev/go-kit/pacing"
 )
 
-// DefaultHeaderOrder is a generic Chrome-like header order.
+// DefaultHeaderOrder is the Chrome request-header order, taken from the
+// real-Chrome references in internal/fingerprint/testdata/reference_chrome_*.json
+// (header_order field). Real Chrome sends these 13 headers in this exact order
+// on a top-level GET navigation. referer and cookie are not in the reference
+// (the capture was a clean first request) but are appended so they stay ordered
+// when a caller supplies them; their position is approximate — the references
+// do not record it.
 var DefaultHeaderOrder = []string{
+	"sec-ch-ua",
+	"sec-ch-ua-mobile",
+	"sec-ch-ua-platform",
+	"accept-language",
+	"upgrade-insecure-requests",
+	"user-agent",
+	"accept",
+	"sec-fetch-site",
+	"sec-fetch-mode",
+	"sec-fetch-user",
+	"sec-fetch-dest",
+	"accept-encoding",
+	"priority",
+	"referer",
+	"cookie",
+}
+
+// FirefoxHeaderOrder is the Firefox request-header order on a top-level GET
+// navigation over HTTP/2, as observed from a real Firefox. cookie was
+// captured between accept-encoding and upgrade-insecure-requests; referer is
+// placed just before it (its position was not captured).
+var FirefoxHeaderOrder = []string{
+	"user-agent",
 	"accept",
 	"accept-language",
 	"accept-encoding",
 	"referer",
 	"cookie",
-	"user-agent",
+	"upgrade-insecure-requests",
+	"sec-fetch-dest",
+	"sec-fetch-mode",
+	"sec-fetch-site",
+	"sec-fetch-user",
+	"priority",
+	"te",
+}
+
+// DefaultHeaderOrderFor returns the request-header order that matches the
+// given BrowserProfile.Browser value: Firefox gets its own order, every other
+// browser the Chrome order (the order for Safari has not been captured).
+func DefaultHeaderOrderFor(browser string) []string {
+	if browser == "firefox" {
+		return FirefoxHeaderOrder
+	}
+	return DefaultHeaderOrder
 }
 
 // BrowserClient wraps an HTTPDoer backend with middleware, proxy rotation,
@@ -26,10 +76,31 @@ type BrowserClient struct {
 	doer         HTTPDoer
 	headerOrder  []string
 	proxyPool    ProxyPoolProvider // nil = no auto-rotation
+	poolCloser   io.Closer         // non-nil only for pools the client owns (option-created)
 	middlewares  []Middleware
 	handler      Handler // lazy-built from middlewares + base handler
 	debug        bool
 	blockRetries int // extra retry attempts on 403/429 (requires proxyPool)
+	identity     BrowserIdentity
+	fetchMode    bool       // WithFetchMode: add Chrome's fetch/XHR priority header
+	doerCloser   io.Closer  // non-nil only for a doer the client built itself (not WithBackend)
+	doerIdler    idleCloser // same ownership rule as doerCloser
+	closeOnce    sync.Once
+	closeErr     error
+
+	// requestURLGuard is the pre-request (tier-3) SSRF check on the initial
+	// target URL, evaluated before the (possibly proxied) fetch. nil = no
+	// pre-request guard (WithoutSSRFGuard). This is the only tier that guards
+	// a proxied fetch's initial target.
+	requestURLGuard func(ctx context.Context, u *url.URL) error
+
+	// proxyAllow lets the dial guard pass the configured proxy's endpoint and
+	// nothing else; nil when no dial guard is installed.
+	proxyAllow *proxyAllowance
+
+	// maxBodyBytes is WithMaxBodyBytes; 0 = unbounded. doWithRetry enforces it
+	// on the finished response, whichever backend or middleware produced it.
+	maxBodyBytes int64
 }
 
 // ProxyPoolProvider returns the next proxy URL for rotation.
@@ -46,13 +117,34 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 	if len(cfg.buildErrors) > 0 {
 		return nil, cfg.buildErrors[0]
 	}
+	if cfg.fetchMode {
+		if err := checkFetchModeIdentity(cfg); err != nil {
+			return nil, err
+		}
+	}
+
+	// The dial guard sees the proxy's address on a proxied client. The proxy is
+	// operator configuration, so its endpoint (and only that) is let through.
+	dialControl := cfg.dialControl
+	var proxyAllow *proxyAllowance
+	if dialControl != nil {
+		proxyAllow = newProxyAllowance(cfg.proxyURL)
+		dialControl = proxyAllow.wrap(dialControl)
+	}
 
 	backendCfg := BackendConfig{
-		Profile:         cfg.profile,
-		ProxyURL:        cfg.proxyURL,
-		TimeoutSeconds:  cfg.timeout,
-		FollowRedirects: cfg.followRedirs,
-		HTTP3:           cfg.http3,
+		Profile:            cfg.profile,
+		ProxyURL:           cfg.proxyURL,
+		TimeoutSeconds:     cfg.timeout,
+		FollowRedirects:    cfg.followRedirs,
+		HTTP3:              cfg.http3,
+		FetchMode:          cfg.fetchMode,
+		CookieJar:          cfg.cookieJar,
+		MaxBodyBytes:       cfg.maxBodyBytes,
+		InsecureSkipVerify: cfg.insecureSkipVerify,
+		DialControl:        dialControl,
+		RedirectGuard:      cfg.redirectGuard,
+		newHTTPClient:      cfg.newHTTPClient,
 	}
 
 	factory := cfg.backend
@@ -67,15 +159,33 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 
 	order := cfg.headerOrder
 	if order == nil {
-		order = DefaultHeaderOrder
+		order = defaultHeaderOrderFor(resolveIdentity(cfg), cfg.fetchMode)
+	}
+
+	// The client owns every doer it builds itself (the default tls-client
+	// backend and WithStdHTTP). A doer from a caller's WithBackend factory
+	// belongs to the caller and is never closed here.
+	var doerCloser io.Closer
+	var doerIdler idleCloser
+	if !cfg.callerBackend {
+		doerCloser, _ = doer.(io.Closer)
+		doerIdler, _ = doer.(idleCloser)
 	}
 
 	bc := &BrowserClient{
-		doer:         doer,
-		headerOrder:  order,
-		proxyPool:    cfg.proxyPool,
-		debug:        cfg.debug,
-		blockRetries: cfg.blockRetries,
+		doer:            doer,
+		doerCloser:      doerCloser,
+		doerIdler:       doerIdler,
+		headerOrder:     order,
+		proxyPool:       cfg.proxyPool,
+		poolCloser:      cfg.poolCloser,
+		debug:           cfg.debug,
+		blockRetries:    cfg.blockRetries,
+		requestURLGuard: cfg.requestURLGuard,
+		proxyAllow:      proxyAllow,
+		maxBodyBytes:    cfg.maxBodyBytes,
+		identity:        resolveIdentity(cfg),
+		fetchMode:       cfg.fetchMode,
 	}
 	if cfg.debug {
 		bc.Use(LoggingMiddleware)
@@ -87,6 +197,7 @@ func NewClient(opts ...ClientOption) (*BrowserClient, error) {
 	if cfg.oxBrowserURL != "" {
 		oxProxyFn := oxBrowserProxyFn(cfg.proxyPool)
 		oxClient := newOxBrowserClientMaybeProxy(cfg.oxBrowserURL, oxProxyFn)
+		oxClient.maxReply = oxEnvelopeLimit(cfg.maxBodyBytes)
 		if cfg.cookieProvider == nil {
 			bc.Use(CloudflareCookieMiddleware(NewOxBrowserSolver(OxBrowserSolverConfig{
 				BaseURL: cfg.oxBrowserURL,
@@ -106,6 +217,42 @@ func (bc *BrowserClient) Use(mw ...Middleware) {
 	bc.handler = nil // rebuild on next Do()
 }
 
+// resolveIdentity builds the BrowserIdentity a client reports. If WithIdentity
+// was used, the supplied identity (with Client Hints already derived by the
+// option) wins. Otherwise the identity is resolved from the configured
+// TLSProfile via BuiltinProfiles — the first matching entry supplies the
+// User-Agent and metadata, and Client Hints are derived from that UA. For a
+// profile with no BuiltinProfiles entry the UA is "" and Client Hints are nil
+// (UserAgentForProfile's documented no-entry behaviour); the TLSProfile is
+// still carried so Identity().TLSProfile always reflects the backend config.
+func resolveIdentity(cfg *clientConfig) BrowserIdentity {
+	if cfg.identity != nil {
+		return *cfg.identity
+	}
+	bp, _ := profileForTLS(cfg.profile)
+	if bp.TLSProfile == "" {
+		bp.TLSProfile = cfg.profile
+	}
+	return BrowserIdentity{
+		BrowserProfile: bp,
+		ClientHints:    ClientHintsHeaders(bp.UserAgent),
+	}
+}
+
+// Identity returns the BrowserIdentity the client is actually presenting: the
+// TLS profile installed on the backend, the User-Agent paired with it, and the
+// Client Hints derived from that User-Agent. For a client built with only
+// WithProfile (or the bare default), the UA is resolved from BuiltinProfiles
+// so it agrees with the JA3 by contract. For a client built with
+// WithIdentity, the supplied identity is returned verbatim.
+//
+// This is the accessor consumer repos use to obtain the User-Agent that
+// matches the fingerprint they are presenting, instead of hardcoding their
+// own UA literal that can drift from the library's default profile.
+func (bc *BrowserClient) Identity() BrowserIdentity {
+	return bc.identity
+}
+
 // buildHandler constructs the handler chain from middlewares + base handler.
 func (bc *BrowserClient) buildHandler() Handler {
 	if bc.handler != nil {
@@ -121,9 +268,24 @@ func (bc *BrowserClient) buildHandler() Handler {
 }
 
 // baseHandler returns the core Handler that delegates to the backend.
+// It runs the pre-request (tier-3) SSRF guard on the final target URL before
+// handing off to the backend — the only tier that guards a proxied fetch's
+// initial target (tier-1 dial control sees only the proxy there).
 func (bc *BrowserClient) baseHandler(order []string) Handler {
 	return func(req *Request) (*Response, error) {
+		if bc.requestURLGuard != nil {
+			u, err := url.Parse(req.URL)
+			if err != nil {
+				return nil, fmt.Errorf("%w: parse %q: %w", ErrSSRFBlocked, req.URL, err)
+			}
+			if err := bc.requestURLGuard(context.Background(), u); err != nil {
+				return nil, err
+			}
+		}
 		req.HeaderOrder = order
+		if bc.fetchMode {
+			req.Headers = withFetchPriorityHeader(req.Headers)
+		}
 		return bc.doer.Do(req)
 	}
 }
@@ -139,12 +301,50 @@ func (bc *BrowserClient) Do(method, urlStr string, headers map[string]string, bo
 
 // SetProxy changes the proxy URL for subsequent requests.
 func (bc *BrowserClient) SetProxy(proxyURL string) error {
+	if bc.proxyAllow != nil {
+		return bc.proxyAllow.apply(proxyURL, bc.doer.SetProxy)
+	}
 	return bc.doer.SetProxy(proxyURL)
 }
 
 // GetCookieValue returns the value of a named cookie for the given URL.
 func (bc *BrowserClient) GetCookieValue(rawURL, name string) string {
 	return bc.doer.GetCookieValue(rawURL, name)
+}
+
+// CloseIdleConnections closes the idle connections of the backend the client
+// built itself (the default tls-client, or WithStdHTTP); a backend supplied
+// through WithBackend belongs to the caller and is left alone. A connection
+// in use is left alone, and one opened later idles out by itself. Unlike
+// Close it is safe to call concurrently with Do, repeatedly, and after Close.
+func (bc *BrowserClient) CloseIdleConnections() {
+	if bc.doerIdler != nil {
+		bc.doerIdler.CloseIdleConnections()
+	}
+}
+
+// Close releases resources the client owns. Only pools the client created
+// itself — via WithWebshareCountry or WithWebshareRotating — are closed
+// (this stops the Webshare credential refresher); a pool supplied through
+// WithProxyPool belongs to the caller and is left alone. Likewise the backend
+// the client built itself (the default tls-client, or WithStdHTTP) is closed,
+// while one supplied through WithBackend belongs to the caller and is left
+// alone. Closing the backend releases its idle connections (and HTTP/3
+// sockets); a connection serving a request is left to finish, and an HTTP/2
+// connection used by an in-flight request can stay open until its idle timeout
+// (about 90 s). A Do after Close opens new connections that nothing closes,
+// and Close must not run concurrently with Do. Idempotent; returns the owned
+// pool's first close error, if any (the backend is closed regardless).
+func (bc *BrowserClient) Close() error {
+	bc.closeOnce.Do(func() {
+		if bc.poolCloser != nil {
+			bc.closeErr = bc.poolCloser.Close()
+		}
+		if bc.doerCloser != nil {
+			_ = bc.doerCloser.Close() // tlsClientDoer.Close never errors
+		}
+	})
+	return bc.closeErr
 }
 
 // DoWithHeaderOrder executes a request with a custom header order.
@@ -202,6 +402,31 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 
 		resp, err := handler(req)
 		if err != nil {
+			// An SSRF-blocked target is a verdict about the URL/address, not
+			// about the proxy in use — every retry would re-block identically
+			// (tier-3's pre-request check runs before SetProxy on the next
+			// attempt too). Return immediately instead of burning the proxy
+			// pool on a request that can never succeed.
+			if errors.Is(err, ErrSSRFBlocked) {
+				return nil, nil, 0, err
+			}
+			// Likewise an oversized body is a verdict about the response, and
+			// the retry would pull another body of that size through a proxy.
+			if errors.Is(err, ErrBodyTooLarge) {
+				if resp != nil {
+					return nil, nil, resp.StatusCode, err
+				}
+				return nil, nil, 0, err
+			}
+			// A proxy 407 reaches here as a transport ERROR, not a response:
+			// both real backends tunnel through CONNECT and surface the
+			// rejection in err (the resp.StatusCode == 407 check below never
+			// sees it). Report it so a refreshing pool re-fetches credentials.
+			if bc.proxyPool != nil && isProxyAuthError(err) {
+				if r, ok := bc.proxyPool.(authFailureReporter); ok {
+					r.ReportAuthFailure()
+				}
+			}
 			// Retry on proxy errors (502, connection refused, etc.) with a new proxy.
 			if attempt < maxAttempts-1 && bc.proxyPool != nil {
 				slog.Debug("request error, retrying with new proxy",
@@ -216,13 +441,32 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 			return nil, nil, 0, err
 		}
 
+		// The backend enforces the limit while reading; this catches what it
+		// cannot: a WithBackend backend that ignores BackendConfig, or a
+		// middleware that swapped in a larger body (the ox-browser fallback).
+		if bc.maxBodyBytes > 0 && int64(len(resp.Body)) > bc.maxBodyBytes {
+			return nil, nil, resp.StatusCode, bodyTooLarge(bc.maxBodyBytes)
+		}
+
+		// A 407 is the proxy rejecting its credentials — report it so a pool
+		// that can refresh (e.g. *proxypool.Webshare) re-fetches them, then
+		// return the response as-is. Not a block status: every pool entry
+		// shares the same account credentials, so rotation cannot help.
+		if bc.proxyPool != nil && resp.StatusCode == http.StatusProxyAuthRequired {
+			if r, ok := bc.proxyPool.(authFailureReporter); ok {
+				r.ReportAuthFailure()
+			}
+		}
+
 		if attempt < maxAttempts-1 && isBlockStatus(resp.StatusCode) {
 			slog.Debug("block status, retrying with new proxy",
 				slog.String("url", req.URL),
 				slog.Int("status", resp.StatusCode),
 				slog.Int("attempt", attempt+1))
-			jitter := time.Duration(100+rand.IntN(200)) * time.Millisecond //nolint:mnd,gosec
-			time.Sleep(jitter)
+			// 100–300ms jitter between block-status retries via canonical pacing.
+			// doWithRetry has no context parameter; background context is safe
+			// here — this is a short bounded sleep (max 300ms) inside a retry loop.
+			_ = (pacing.Jitter{Min: 100 * time.Millisecond, Max: 300 * time.Millisecond}).Sleep(context.Background())
 			continue
 		}
 
@@ -233,9 +477,29 @@ func (bc *BrowserClient) doWithRetry(req *Request, handler Handler) ([]byte, map
 	return nil, nil, 0, nil
 }
 
+// isProxyAuthError reports whether a transport error is the proxy's 407
+// rejection of its credentials. Neither backend exposes a typed error for it:
+// tls-client returns a plain "Proxy responded with non 200 code: 407 <reason>",
+// and net/http strips the status code entirely, leaving only the reason
+// phrase ("proxyconnect"/"Get ...": Proxy Authentication Required). Matching
+// either form covers both backends — the reason-phrase check catches
+// net/http and tls-client's standard-reason text, the "non 200 code: 407"
+// form catches tls-client when a proxy answers 407 with a custom reason.
+func isProxyAuthError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "Proxy Authentication Required") ||
+		strings.Contains(msg, "non 200 code: 407")
+}
+
 // transportProxyProvider is a subset of proxypool.ProxyPool used for type assertion.
 type transportProxyProvider interface {
 	TransportProxy() func(*http.Request) (*url.URL, error)
+}
+
+// authFailureReporter mirrors proxypool.AuthFailureReporter for type
+// assertion — pools that react to HTTP 407 (e.g. *proxypool.Webshare).
+type authFailureReporter interface {
+	ReportAuthFailure()
 }
 
 // oxBrowserProxyFn extracts a TransportProxy function from pool if it supports it.
@@ -256,4 +520,44 @@ func newOxBrowserClientMaybeProxy(baseURL string, proxyFn func(*http.Request) (*
 		return NewOxBrowserClientWithProxy(baseURL, proxyFn)
 	}
 	return NewOxBrowserClient(baseURL)
+}
+
+// fetchPriorityHeader is the priority header Chrome sends on fetch() and
+// XMLHttpRequest (navigations send "u=0, i").
+const fetchPriorityHeader = "u=1, i"
+
+// withFetchPriorityHeader returns h with "priority: u=1, i" added unless the
+// caller already set a priority header under any capitalisation. It copies
+// rather than writing into h, which belongs to the caller.
+func withFetchPriorityHeader(h map[string]string) map[string]string {
+	for k := range h {
+		if strings.EqualFold(k, "priority") {
+			return h
+		}
+	}
+	out := make(map[string]string, len(h)+1)
+	for k, v := range h {
+		out[k] = v
+	}
+	out["priority"] = fetchPriorityHeader
+	return out
+}
+
+// checkFetchModeIdentity refuses fetch mode unless both the TLS profile and
+// the identity the client reports are Chromium: an identity can name Firefox
+// or Safari and leave the TLS profile empty, which keeps the Chrome default.
+func checkFetchModeIdentity(cfg *clientConfig) error {
+	if !isChromiumTLSProfile(cfg.profile) {
+		return fmt.Errorf("%w: TLS profile %q", ErrFetchModeUnsupported, string(cfg.profile))
+	}
+	id := resolveIdentity(cfg)
+	switch id.Browser {
+	case "chrome", "edge", "brave":
+		return nil
+	case "":
+		if id.UserAgent == "" || strings.Contains(id.UserAgent, "Chrome/") {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: identity %q", ErrFetchModeUnsupported, id.Browser+" "+id.UserAgent)
 }
